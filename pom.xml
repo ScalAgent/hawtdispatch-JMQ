@@ -28,7 +28,7 @@
 
   <groupId>org.fusesource.hawtdispatch</groupId>
   <artifactId>hawtdispatch-project</artifactId>
-  <version>1.22-SNAPSHOT</version>
+  <version>1.22-JMQ</version>
   <packaging>pom</packaging>
   
   <name>${project.artifactId}</name>
@@ -160,8 +160,8 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>2.1</version>
         <configuration>
-          <source>1.5</source>
-          <target>1.5</target>
+          <source>1.8</source>
+          <target>1.8</target>
         </configuration>
       </plugin>
 
@@ -374,10 +374,10 @@
     <module>hawtdispatch</module>
     <module>hawtdispatch-transport</module>
     <!-- <module>hawtdispatch-netty</module> -->
-    <module>hawtdispatch-scala</module>
-    <module>hawtdispatch-scala-2.11</module>
-    <module>hawtdispatch-example</module>
-    <module>hawtdispatch-website</module>
+    <!-- <module>hawtdispatch-scala</module> -->
+    <!-- <module>hawtdispatch-scala-2.11</module> -->
+    <!-- <module>hawtdispatch-example</module> -->
+    <!-- <module>hawtdispatch-website</module> -->
   </modules>
 
 </project>
