@@ -1,5 +1,6 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
+ * Copyright (C) 2022 ScalAgent D.T
  * http://fusesource.com
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,13 +21,21 @@ package org.fusesource.hawtdispatch.transport;
 import org.fusesource.hawtdispatch.*;
 import org.fusesource.hawtdispatch.internal.BaseSuspendable;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Logger;
 
 /**
  * An implementation of the {@link org.fusesource.hawtdispatch.transport.Transport} interface using raw tcp/ip
@@ -441,113 +450,316 @@ public class TcpTransport extends ServiceBase implements Transport {
         if(yieldSource!=null) yieldSource.setTargetQueue(queue);
     }
 
-    public void _start(Task onCompleted) {
-        try {
-            if (socketState.is(CONNECTING.class)) {
+    // ==================================================
+    // Modification for use HTTP CONNECT # BEGIN
+    // ==================================================
 
-                // Resolving host names might block.. so do it on the blocking executor.
-                this.blockingExecutor.execute(new Runnable() {
-                    public void run() {
-                        try {
+    private Proxy proxy = null;
+    
+    public final Proxy getProxy() {
+      return proxy;
+    }
 
-                            final InetSocketAddress localAddress = (localLocation != null) ?
-                                    new InetSocketAddress(InetAddress.getByName(localLocation.getHost()), localLocation.getPort())
-                                    : null;
+    public final void setProxy(String host, int port) {
+      this.proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(host, port));
+    }
 
-                            String host = resolveHostName(remoteLocation.getHost());
-                            final InetSocketAddress remoteAddress = new InetSocketAddress(host, remoteLocation.getPort());
+    private boolean connect(SocketChannel channel, InetSocketAddress remoteAddr) throws IOException {
+      boolean success = false;
+      ByteBuffer proxyConnect = null;
+      SocketAddress sa;
 
-                            // Done resolving.. switch back to the dispatch queue.
-                            dispatchQueue.execute(new Task() {
-                                @Override
-                                public void run() {
-                                    // No need to complete if we have been canceled.
-                                    if( ! socketState.is(CONNECTING.class) ) {
-                                        return;
-                                    }
-                                    try {
+      trace("connect: " + proxy);
+      if (proxy == null) {
+        sa = remoteAddr;
+      } else {
+        sa = proxy.address();
+        proxyConnect = createProxyRequest(remoteAddr.getHostString(), remoteAddr.getPort());
+      }
 
-                                        if (localAddress != null) {
-                                            channel.socket().bind(localAddress);
-                                        }
-                                        trace("connecting...");
-                                        if (channel.connect(remoteAddress)) {
-                                            socketState = new CONNECTED();
-                                            onConnected();
-                                            return;
-                                        }
+      boolean blocking = channel.isBlocking();
+      trace("connect: blocking=" + blocking);
+      try {
+        channel.configureBlocking(true);
+      } catch (IOException ioe) {
+        throw ioe;
+      }
 
-                                        // this allows the connect to complete..
-                                        readSource = Dispatch.createSource(channel, SelectionKey.OP_CONNECT, dispatchQueue);
-                                        readSource.setEventHandler(new Task() {
-                                            public void run() {
-                                                if (getServiceState() != STARTED) {
-                                                    return;
-                                                }
-                                                try {
-                                                    trace("connected.");
-                                                    channel.finishConnect();
-                                                    readSource.setCancelHandler(null);
-                                                    readSource.cancel();
-                                                    readSource = null;
-                                                    socketState = new CONNECTED();
-                                                    onConnected();
-                                                } catch (IOException e) {
-                                                    onTransportFailure(e);
-                                                }
-                                            }
-                                        });
-                                        readSource.setCancelHandler(CANCEL_HANDLER);
-                                        readSource.resume();
+      // Get the connection timeout
+      long timeout = 1000;
 
-                                    } catch (Exception e) {
-                                        try {
-                                            channel.close();
-                                        } catch (Exception ignore) {
-                                        }
-                                        socketState = new CANCELED(true);
-                                        if (! (e instanceof IOException)) {
-                                            e = new IOException(e);
-                                        }
-                                        listener.onTransportFailure((IOException)e);
-                                    }
-                                }
-                            });
+      try {
+        // Open the connection
+        trace("connect: connecting...");
+        success = channel.connect(sa);
+        trace("connect: connected -> " + success);
 
-                        } catch (final IOException e) {
-                            // we're in blockingExecutor thread context here
-                            dispatchQueue.execute(new Task() {
-                                public void run() {
-                                    try {
-                                        channel.close();
-                                    } catch (IOException ignore) {
-                                    }
-                                    socketState = new CANCELED(true);
-                                    listener.onTransportFailure(e);
-                                }
-                            });
-                        }
-                    }
-                });
-            } else if (socketState.is(CONNECTED.class)) {
-                dispatchQueue.execute(new Task() {
-                    public void run() {
-                        try {
-                            trace("was connected.");
-                            onConnected();
-                        } catch (IOException e) {
-                            onTransportFailure(e);
-                        }
-                    }
-                });
-            } else {
-                trace("cannot be started.  socket state is: " + socketState);
-            }
-        } finally {
-            if (onCompleted != null) {
-                onCompleted.run();
-            }
+        if (proxyConnect != null) {
+          ByteBuffer response = ByteBuffer.allocate(4096);
+
+          // Proxy CONNECT is clear text
+          //          channel = new ChannelWrapperNonSecure(socketChannel);
+          writeRequest(channel, proxyConnect, timeout);
+          trace("connect: writeRequest ok");
+          int statusCode = processResponse(response, channel, timeout);
+          trace("connect: processResponse ok");
+          if (statusCode != 200) {
+            trace("connect: statusCode=" + statusCode);
+            throw new Exception("wsWebSocketContainer.proxyConnectFail:" + Integer.toString(statusCode));
+          }
         }
+
+        return success;
+      } catch (Exception e) {
+        throw new IOException(e);
+      } finally {
+        if (success) {
+          try {
+            channel.configureBlocking(blocking);
+            trace("connect: configureBlocking -> " + blocking);
+          } catch (IOException ioe) {
+            
+          }
+        }
+      }
+    }
+
+    private static ByteBuffer createProxyRequest(String host, int port) {
+      StringBuilder request = new StringBuilder();
+      request.append("CONNECT ");
+      request.append(host);
+      request.append(':');
+      request.append(port);
+
+      request.append(" HTTP/1.1\r\nProxy-Connection: keep-alive\r\nConnection: keepalive\r\nHost: ");
+      request.append(host);
+      request.append(':');
+      request.append(port);
+
+      request.append("\r\n\r\n");
+
+      byte[] bytes = request.toString().getBytes(StandardCharsets.ISO_8859_1);
+      return ByteBuffer.wrap(bytes);
+    }
+
+    private static void writeRequest(SocketChannel channel, ByteBuffer request, long timeout) throws Exception {
+      int toWrite = request.limit();
+
+      int thisWrite = channel.write(request);
+      toWrite -= thisWrite;
+
+      while (toWrite > 0) {
+        thisWrite = channel.write(request);
+        toWrite -= thisWrite;
+      }
+    }
+
+    private static String readLine(ByteBuffer response) {
+      // All ISO-8859-1
+      StringBuilder sb = new StringBuilder();
+
+      char c = 0;
+      while (response.hasRemaining()) {
+        c = (char) response.get();
+        sb.append(c);
+        if (c == 10) {
+          break;
+        }
+      }
+
+      return sb.toString();
+    }
+
+    private static void parseHeaders(String line, Map<String,List<String>> headers) {
+      // Treat headers as single values by default.
+
+      int index = line.indexOf(':');
+      if (index == -1) {
+        //          log.warn(sm.getString("wsWebSocketContainer.invalidHeader", line));
+        return;
+      }
+      // Header names are case insensitive so always use lower case
+      String headerName = line.substring(0, index).trim().toLowerCase(Locale.ENGLISH);
+      // Multi-value headers are stored as a single header and the client is
+      // expected to handle splitting into individual values
+      String headerValue = line.substring(index + 1).trim();
+
+      List<String> values = headers.get(headerName);
+      if (values == null) {
+        values = new ArrayList<>(1);
+        headers.put(headerName, values);
+      }
+      values.add(headerValue);
+    }
+
+    private static int parseStatus(String line) throws Exception {
+      // This client only understands HTTP 1.
+      // RFC2616 is case specific
+      String[] parts = line.trim().split(" ");
+      // CONNECT for proxy may return a 1.0 response
+      if (parts.length < 2 || !("HTTP/1.0".equals(parts[0]) || "HTTP/1.1".equals(parts[0]))) {
+        throw new Exception("wsWebSocketContainer.invalidStatus: " + line);
+      }
+      try {
+        return Integer.parseInt(parts[1]);
+      } catch (NumberFormatException nfe) {
+        throw new Exception("wsWebSocketContainer.invalidStatus: " + line);
+      }
+    }
+
+    private static int processResponse(ByteBuffer response, SocketChannel channel, long timeout) throws Exception {
+      Map<String,List<String>> headers = new HashMap<String,List<String>>();
+
+      int status = 0;
+      boolean readStatus = false;
+      boolean readHeaders = false;
+      String line = null;
+      while (!readHeaders) {
+        // On entering loop buffer will be empty and at the start of a new
+        // loop the buffer will have been fully read.
+        response.clear();
+        // Blocking read
+        int bytesRead = channel.read(response);
+        if (bytesRead == -1) {
+          throw new EOFException("wsWebSocketContainer.responseFail: " + Integer.toString(status));
+        }
+        response.flip();
+        while (response.hasRemaining() && !readHeaders) {
+          if (line == null) {
+            line = readLine(response);
+          } else {
+            line += readLine(response);
+          }
+          if ("\r\n".equals(line)) {
+            readHeaders = true;
+          } else if (line.endsWith("\r\n")) {
+            if (readStatus) {
+              parseHeaders(line, headers);
+            } else {
+              status = parseStatus(line);
+              readStatus = true;
+            }
+            line = null;
+          }
+        }
+      }
+
+      return status;
+    }
+
+    // ==================================================
+    // Modification for use HTTP CONNECT # BEGIN
+    // ==================================================
+
+    public void _start(Task onCompleted) {
+      try {
+        if (socketState.is(CONNECTING.class)) {
+
+          // Resolving host names might block.. so do it on the blocking executor.
+          this.blockingExecutor.execute(new Runnable() {
+            public void run() {
+              try {
+
+                final InetSocketAddress localAddress = (localLocation != null) ?
+                                                                                new InetSocketAddress(InetAddress.getByName(localLocation.getHost()), localLocation.getPort())
+                                                                                : null;
+
+                String host = resolveHostName(remoteLocation.getHost());
+                final InetSocketAddress remoteAddress = new InetSocketAddress(host, remoteLocation.getPort());
+
+                // Done resolving.. switch back to the dispatch queue.
+                dispatchQueue.execute(new Task() {
+                  @Override
+                  public void run() {
+                    // No need to complete if we have been canceled.
+                    if( ! socketState.is(CONNECTING.class) ) {
+                      return;
+                    }
+                    try {
+
+                      if (localAddress != null) {
+                        channel.socket().bind(localAddress);
+                      }
+                      trace("connecting...");
+                      if (connect(channel, remoteAddress)) {
+//                    if (channel.connect(remoteAddress)) {
+                        trace("connected");
+                        socketState = new CONNECTED();
+                        onConnected();
+                        return;
+                      }
+
+                      // this allows the connect to complete..
+                      readSource = Dispatch.createSource(channel, SelectionKey.OP_CONNECT, dispatchQueue);
+                      readSource.setEventHandler(new Task() {
+                        public void run() {
+                          if (getServiceState() != STARTED) {
+                            return;
+                          }
+                          try {
+                            trace("connected.");
+                            channel.finishConnect();
+                            readSource.setCancelHandler(null);
+                            readSource.cancel();
+                            readSource = null;
+                            socketState = new CONNECTED();
+                            onConnected();
+                          } catch (IOException e) {
+                            onTransportFailure(e);
+                          }
+                        }
+                      });
+                      readSource.setCancelHandler(CANCEL_HANDLER);
+                      readSource.resume();
+
+                    } catch (Exception e) {
+                      try {
+                        channel.close();
+                      } catch (Exception ignore) {
+                      }
+                      socketState = new CANCELED(true);
+                      if (! (e instanceof IOException)) {
+                        e = new IOException(e);
+                      }
+                      listener.onTransportFailure((IOException)e);
+                    }
+                  }
+                });
+
+              } catch (final IOException e) {
+                // we're in blockingExecutor thread context here
+                dispatchQueue.execute(new Task() {
+                  public void run() {
+                    try {
+                      channel.close();
+                    } catch (IOException ignore) {
+                    }
+                    socketState = new CANCELED(true);
+                    listener.onTransportFailure(e);
+                  }
+                });
+              }
+            }
+          });
+        } else if (socketState.is(CONNECTED.class)) {
+          dispatchQueue.execute(new Task() {
+            public void run() {
+              try {
+                trace("was connected.");
+                onConnected();
+              } catch (IOException e) {
+                onTransportFailure(e);
+              }
+            }
+          });
+        } else {
+          trace("cannot be started.  socket state is: " + socketState);
+        }
+      } finally {
+        if (onCompleted != null) {
+          onCompleted.run();
+        }
+      }
     }
 
     public void _stop(final Task onCompleted) {
@@ -828,8 +1040,10 @@ public class TcpTransport extends ServiceBase implements Transport {
         this.useLocalHost = useLocalHost;
     }
 
+    private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
+    
     private void trace(String message) {
-        // TODO:
+        logger.debug(message);
     }
 
     public SocketChannel getSocketChannel() {
