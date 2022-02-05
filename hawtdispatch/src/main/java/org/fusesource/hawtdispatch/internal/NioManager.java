@@ -1,5 +1,6 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
+ * Copyright (C) 2022 ScalAgent D.T
  * http://fusesource.com
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -251,6 +252,16 @@ public class NioManager {
     public NioAttachment register(SelectableChannel channel, int interestOps) throws ClosedChannelException {
 
         SelectionKey key = channel.keyFor(selector);
+        
+        // JORAMMQ-BEGIN
+        if (key != null && ! key.isValid()) {
+          try {
+            selector.selectNow();
+            key = channel.keyFor(selector);
+          } catch (Exception ignore) {}
+        }
+        // JORAMMQ-END
+        
         if( key==null ) {
             key = channel.register(selector, interestOps);
             registeredKeys.incrementAndGet();
@@ -276,11 +287,15 @@ public class NioManager {
             key.attach(null);
             attachment.cancel();
             key.cancel();
+            
+            // JORAMMQ-BEGIN This code is commented in 1.20-JoramMQ-1
             try {
                 // To make sure the key is canceled out now.
                 selector.selectNow();
             } catch (Exception ignore) {
             }
+			// JORAMMQ-END
+            
             registeredKeys.decrementAndGet();
         }
     }
