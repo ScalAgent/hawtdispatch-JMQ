@@ -1043,7 +1043,7 @@ public class TcpTransport extends ServiceBase implements Transport {
     private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
     
     private void trace(String message) {
-        logger.debug(message);
+        logger.fine(message);
     }
 
     public SocketChannel getSocketChannel() {
