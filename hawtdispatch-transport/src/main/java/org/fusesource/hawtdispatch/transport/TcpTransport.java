@@ -455,13 +455,15 @@ public class TcpTransport extends ServiceBase implements Transport {
     // ==================================================
 
     private Proxy proxy = null;
+    private String auth = null;
     
     public final Proxy getProxy() {
       return proxy;
     }
 
-    public final void setProxy(String host, int port) {
+    public final void setProxy(String host, int port, String auth) {
       this.proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress(host, port));
+      this.auth = auth;
     }
 
     private boolean connect(SocketChannel channel, InetSocketAddress remoteAddr) throws IOException {
@@ -474,7 +476,7 @@ public class TcpTransport extends ServiceBase implements Transport {
         sa = remoteAddr;
       } else {
         sa = proxy.address();
-        proxyConnect = createProxyRequest(remoteAddr.getHostString(), remoteAddr.getPort());
+        proxyConnect = createProxyRequest(remoteAddr.getHostString(), remoteAddr.getPort(), auth);
       }
 
       boolean blocking = channel.isBlocking();
@@ -505,7 +507,7 @@ public class TcpTransport extends ServiceBase implements Transport {
           trace("connect: processResponse ok");
           if (statusCode != 200) {
             trace("connect: statusCode=" + statusCode);
-            throw new Exception("wsWebSocketContainer.proxyConnectFail:" + Integer.toString(statusCode));
+            throw new Exception("TcpTransport.connect:" + Integer.toString(statusCode));
           }
         }
 
@@ -524,7 +526,7 @@ public class TcpTransport extends ServiceBase implements Transport {
       }
     }
 
-    private static ByteBuffer createProxyRequest(String host, int port) {
+    private ByteBuffer createProxyRequest(String host, int port, String auth) {
       StringBuilder request = new StringBuilder();
       request.append("CONNECT ");
       request.append(host);
@@ -535,14 +537,15 @@ public class TcpTransport extends ServiceBase implements Transport {
       request.append(host);
       request.append(':');
       request.append(port);
-
+      if (auth != null)
+        request.append("\r\nProxy-Authorization: basic ").append(auth);
       request.append("\r\n\r\n");
 
       byte[] bytes = request.toString().getBytes(StandardCharsets.ISO_8859_1);
       return ByteBuffer.wrap(bytes);
     }
 
-    private static void writeRequest(SocketChannel channel, ByteBuffer request, long timeout) throws Exception {
+    private void writeRequest(SocketChannel channel, ByteBuffer request, long timeout) throws Exception {
       int toWrite = request.limit();
 
       int thisWrite = channel.write(request);
@@ -554,7 +557,7 @@ public class TcpTransport extends ServiceBase implements Transport {
       }
     }
 
-    private static String readLine(ByteBuffer response) {
+    private String readLine(ByteBuffer response) {
       // All ISO-8859-1
       StringBuilder sb = new StringBuilder();
 
@@ -570,7 +573,7 @@ public class TcpTransport extends ServiceBase implements Transport {
       return sb.toString();
     }
 
-    private static void parseHeaders(String line, Map<String,List<String>> headers) {
+    private void parseHeaders(String line, Map<String,List<String>> headers) {
       // Treat headers as single values by default.
 
       int index = line.indexOf(':');
@@ -592,7 +595,7 @@ public class TcpTransport extends ServiceBase implements Transport {
       values.add(headerValue);
     }
 
-    private static int parseStatus(String line) throws Exception {
+    private int parseStatus(String line) throws Exception {
       // This client only understands HTTP 1.
       // RFC2616 is case specific
       String[] parts = line.trim().split(" ");
@@ -607,7 +610,7 @@ public class TcpTransport extends ServiceBase implements Transport {
       }
     }
 
-    private static int processResponse(ByteBuffer response, SocketChannel channel, long timeout) throws Exception {
+    private int processResponse(ByteBuffer response, SocketChannel channel, long timeout) throws Exception {
       Map<String,List<String>> headers = new HashMap<String,List<String>>();
 
       int status = 0;
