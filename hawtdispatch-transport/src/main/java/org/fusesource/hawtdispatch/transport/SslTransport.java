@@ -248,7 +248,7 @@ public class SslTransport extends TcpTransport implements SecuredSession {
         super.initializeChannel();
         SSLSession session = engine.getSession();
         readBuffer = ByteBuffer.allocateDirect(session.getPacketBufferSize());
-        readBuffer.flip();
+        ((java.nio.Buffer) readBuffer).flip();
         writeBuffer = ByteBuffer.allocateDirect(session.getPacketBufferSize());
     }
 
@@ -282,27 +282,27 @@ public class SslTransport extends TcpTransport implements SecuredSession {
      * @throws IOException
      */
     protected boolean transportFlush() throws IOException {
-        while (true) {
-            if(writeFlushing) {
-                int count = super.getWriteChannel().write(writeBuffer);
-                if( !writeBuffer.hasRemaining() ) {
-                    writeBuffer.clear();
-                    writeFlushing = false;
-                    suspendWrite();
-                    return true;
-                } else {
-                    return false;
-                }
-            } else {
-                if( writeBuffer.position()!=0 ) {
-                    writeBuffer.flip();
-                    writeFlushing = true;
-                    resumeWrite();
-                } else {
-                    return true;
-                }
-            }
+      while (true) {
+        if(writeFlushing) {
+          int count = super.getWriteChannel().write(writeBuffer);
+          if( !writeBuffer.hasRemaining() ) {
+            ((java.nio.Buffer) writeBuffer).clear();
+            writeFlushing = false;
+            suspendWrite();
+            return true;
+          } else {
+            return false;
+          }
+        } else {
+          if( writeBuffer.position()!=0 ) {
+            ((java.nio.Buffer) writeBuffer).flip();
+            writeFlushing = true;
+            resumeWrite();
+          } else {
+            return true;
+          }
         }
+      }
     }
 
     private int secure_write(ByteBuffer plain) throws IOException {
@@ -338,7 +338,7 @@ public class SslTransport extends TcpTransport implements SecuredSession {
                     // network bytes.
                     int size = Math.min(plain.remaining(), readOverflowBuffer.remaining());
                     plain.put(readOverflowBuffer.array(), readOverflowBuffer.position(), size);
-                    readOverflowBuffer.position(readOverflowBuffer.position()+size);
+                    ((java.nio.Buffer) readOverflowBuffer).position(readOverflowBuffer.position()+size);
                     if( !readOverflowBuffer.hasRemaining() ) {
                         readOverflowBuffer = null;
                     }
@@ -360,7 +360,7 @@ public class SslTransport extends TcpTransport implements SecuredSession {
                 }
                 // read in some more data, perhaps now we can unwrap.
                 readUnderflow = false;
-                readBuffer.flip();
+                ((java.nio.Buffer) readBuffer).flip();
             } else {
                 SSLEngineResult result = engine.unwrap(readBuffer, plain);
                 rc += result.bytesProduced();
@@ -370,7 +370,7 @@ public class SslTransport extends TcpTransport implements SecuredSession {
                     if( readOverflowBuffer.position()==0 ) {
                         readOverflowBuffer = null;
                     } else {
-                        readOverflowBuffer.flip();
+                      ((java.nio.Buffer) readOverflowBuffer).flip();
                     }
                 }
                 switch( result.getStatus() ) {

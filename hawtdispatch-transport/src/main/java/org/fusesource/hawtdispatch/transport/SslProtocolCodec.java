@@ -123,7 +123,7 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
         engine = sslContext.createSSLEngine();
         SSLSession session = engine.getSession();
         readBuffer = ByteBuffer.allocateDirect(session.getPacketBufferSize());
-        readBuffer.flip();
+        ((java.nio.Buffer) readBuffer).flip();
         writeBuffer = ByteBuffer.allocateDirect(session.getPacketBufferSize());
     }
 
@@ -220,7 +220,7 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
                     writeCounter += lastWriteSize;
                 }
                 if( !writeBuffer.hasRemaining() ) {
-                    writeBuffer.clear();
+                    ((java.nio.Buffer) writeBuffer).clear();
                     writeFlushing = false;
                     return true;
                 } else {
@@ -228,7 +228,7 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
                 }
             } else {
                 if( writeBuffer.position()!=0 ) {
-                    writeBuffer.flip();
+                  ((java.nio.Buffer) writeBuffer).flip();
                     writeFlushing = true;
                 } else {
                     return true;
@@ -246,7 +246,7 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
                     // network bytes.
                     int size = Math.min(plain.remaining(), readOverflowBuffer.remaining());
                     plain.put(readOverflowBuffer.array(), readOverflowBuffer.position(), size);
-                    readOverflowBuffer.position(readOverflowBuffer.position()+size);
+                    ((java.nio.Buffer) readOverflowBuffer).position(readOverflowBuffer.position()+size);
                     if( !readOverflowBuffer.hasRemaining() ) {
                         readOverflowBuffer = null;
                     }
@@ -269,17 +269,17 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
                 readCounter += lastReadSize;
                 // read in some more data, perhaps now we can unwrap.
                 readUnderflow = false;
-                readBuffer.flip();
+                ((java.nio.Buffer) readBuffer).flip();
             } else {
                 SSLEngineResult result = engine.unwrap(readBuffer, plain);
                 rc += result.bytesProduced();
                 if( result.getStatus() == BUFFER_OVERFLOW ) {
                     readOverflowBuffer = ByteBuffer.allocate(engine.getSession().getApplicationBufferSize());
                     result = engine.unwrap(readBuffer, readOverflowBuffer);
-                    if( readOverflowBuffer.position()==0 ) {
+                    if (readOverflowBuffer.position()==0 ) {
                         readOverflowBuffer = null;
                     } else {
-                        readOverflowBuffer.flip();
+                      ((java.nio.Buffer) readOverflowBuffer).flip();
                     }
                 }
                 switch( result.getStatus() ) {
@@ -411,7 +411,7 @@ public class SslProtocolCodec implements WrappingProtocolCodec, SecuredSession {
             throw new IllegalStateException("Cannot unread now");
         }
         readBuffer.put(buffer);
-        readBuffer.flip();
+        ((java.nio.Buffer) readBuffer).flip();
     }
 
     public Object read() throws IOException {

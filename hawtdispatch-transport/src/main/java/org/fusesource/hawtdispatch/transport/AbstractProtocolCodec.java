@@ -318,7 +318,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                         }
 
                         readBuffer = ByteBuffer.wrap(newBuffer);
-                        readBuffer.position(loadedSize);
+                        ((java.nio.Buffer) readBuffer).position(loadedSize);
                         readStart = 0;
                         readEnd = neededSize;
                     }
@@ -344,7 +344,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                     // if we did not read a full buffer.. then resize the buffer
                     if( readBuffer.hasRemaining() && readEnd <= readBuffer.position() ) {
                         ByteBuffer perfectSized = ByteBuffer.wrap(Arrays.copyOfRange(readBuffer.array(), 0, readBuffer.position()));
-                        perfectSized.position(readBuffer.position());
+                        ((java.nio.Buffer) perfectSized).position(readBuffer.position());
 
                         if( candidateForCheckin ) {
                             readBufferPool.checkin(readBuffer.array());
@@ -428,7 +428,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             if (trailingSize > 0) {
                 System.arraycopy(readBufferArray, readStart + transferSize, readBufferArray, readStart, trailingSize);
             }
-            readBuffer.position(readStart + trailingSize);
+            ((java.nio.Buffer) readBuffer).position(readStart + trailingSize);
         }
 
         // For big direct byte buffers, it will still not have been filled,
@@ -438,7 +438,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             return false;
         } else {
             directReadBuffer = null;
-            buffer.flip();
+            ((java.nio.Buffer) buffer).flip();
             return true;
         }
     }

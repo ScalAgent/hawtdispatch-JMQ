@@ -248,7 +248,7 @@ public class TcpTransport extends ServiceBase implements Transport {
                     }
                     if( remaining > read_allowance) {
                         reduction = remaining - read_allowance;
-                        dst.limit(dst.limit() - reduction);
+                        ((java.nio.Buffer) dst).limit(dst.limit() - reduction);
                     }
                     rc = channel.read(dst);
                     read_allowance -= rc;
@@ -620,13 +620,13 @@ public class TcpTransport extends ServiceBase implements Transport {
       while (!readHeaders) {
         // On entering loop buffer will be empty and at the start of a new
         // loop the buffer will have been fully read.
-        response.clear();
+        ((java.nio.Buffer) response).clear();
         // Blocking read
         int bytesRead = channel.read(response);
         if (bytesRead == -1) {
           throw new EOFException("wsWebSocketContainer.responseFail: " + Integer.toString(status));
         }
-        response.flip();
+        ((java.nio.Buffer) response).flip();
         while (response.hasRemaining() && !readHeaders) {
           if (line == null) {
             line = readLine(response);
