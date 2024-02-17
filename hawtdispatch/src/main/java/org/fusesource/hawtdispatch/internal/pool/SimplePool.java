@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,13 +71,12 @@ public class SimplePool implements WorkerPool {
     private SimpleThread createWorker(int index) {
         SimpleThread w;
         try {
-            w = new SimpleThread(this);
+            w = new SimpleThread(this, index);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
         w.setDaemon(true);
         w.setPriority(priority);
-        w.setName(name + "-" + (index+1));
         return w;
     }
 

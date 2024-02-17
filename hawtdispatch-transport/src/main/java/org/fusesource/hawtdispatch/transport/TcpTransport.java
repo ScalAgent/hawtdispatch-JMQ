@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
- * Copyright (C) 2022 ScalAgent D.T
  * http://fusesource.com
+ * Copyright (C) 2022-2024 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -692,6 +692,9 @@ public class TcpTransport extends ServiceBase implements Transport {
                         return;
                       }
 
+                      // NOTE SL: the connect function changes the blocking property of the channel to true
+                      // before actually connecting. I assume the following code is never reached.
+
                       // this allows the connect to complete..
                       readSource = Dispatch.createSource(channel, SelectionKey.OP_CONNECT, dispatchQueue);
                       readSource.setEventHandler(new Task() {
@@ -709,6 +712,15 @@ public class TcpTransport extends ServiceBase implements Transport {
                             onConnected();
                           } catch (IOException e) {
                             onTransportFailure(e);
+                            // TODO SL
+                            // this catch clause is simpler than the general one in this function
+                            // isn't it necessary to execute:
+                            //   channel.close();
+                            //   socketState = new CANCELED(true);
+                            // TcpTransport.onConnected actually raises no exception
+                            // However the SslTransport implementation does raise an exception
+                            // - in case of write error in the channel
+                            // - in case of channel closed
                           }
                         }
                       });
@@ -804,6 +816,8 @@ public class TcpTransport extends ServiceBase implements Transport {
 
         readSource.setEventHandler(new Task() {
             public void run() {
+                // this handler shall be executed by the selectorQueue of the readSource
+                // it may run concurrently with the transport dispatchQueue
                 drainInbound();
             }
         });
@@ -919,7 +933,7 @@ public class TcpTransport extends ServiceBase implements Transport {
         }
         try {
             long initial = codec.getReadCounter();
-            // Only process upto 2 x the read buffer worth of data at a time so we can give
+            // Only process up to 4 x the read buffer worth of data at a time so we can give
             // other connections a chance to process their requests.
             while( codec.getReadCounter()-initial < codec.getReadBufferSize()<<2 ) {
                 Object command = codec.read();

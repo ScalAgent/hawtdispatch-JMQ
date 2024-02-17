@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +36,8 @@ public class SimpleThread extends WorkerThread {
     private ThreadDispatchQueue threadQueue;
     private final NioManager nioManager;
 
-    public SimpleThread(SimplePool pool) throws IOException {
-        super(pool.group, pool.name);
+    public SimpleThread(SimplePool pool, int index) throws IOException {
+        super(pool.group, pool.name + "-" + (index+1));
         this.pool = pool;
         this.nioManager = new NioManager();
         this.threadQueue = new ThreadDispatchQueue(pool.globalQueue, this);
@@ -64,15 +65,20 @@ public class SimpleThread extends WorkerThread {
             while(!pool.shutdown) {
 
                 Task task = threadQueue.poll();
+                long now = 0;
                 if( task==null ) {
+                    now = threadQueue.setLastGlobalPoll(now);
                     task = sharedQueue.poll();
                     if( task==null ) {
+                        now = threadQueue.setLastSourcePoll(now);
                         task = threadQueue.getSourceQueue().poll();
                     }
                 }
 
                 if( task == null ) {
+                    now = threadQueue.setLastSelect(now);
                     pool.park(this);
+                    threadQueue.setParkTime(0);
                 } else {
                     task.run();
                 }
@@ -82,6 +88,14 @@ public class SimpleThread extends WorkerThread {
         }
     }
 
+    /**
+     * Get the size of the pool shared list of tasks.
+     * This function is not very efficient nor precise.
+     * It gives a transient value of the list size for monitoring purpose.
+     */
+    public int getPoolTasksSize() {
+      return pool.tasks.size();
+    }
 
     public static final boolean DEBUG = false;
     protected void debug(String str, Object... args) {

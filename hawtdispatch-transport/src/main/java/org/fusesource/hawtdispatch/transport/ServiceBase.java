@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent Distributed Technologies
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -118,6 +119,17 @@ public abstract class ServiceBase {
     }
 
     final public void stop(final Task onCompleted) {
+        // TODO possible improvement
+        // if we are already executing in the proper SerialDispatchQueue,
+        // then execute the task inline in order to avoid unnecessary parallelism
+        // DispatchQueue transportQueue = getDispatchQueue();
+        // if (transportQueue instanceof SerialDispatchQueue &&
+        //     ((SerialDispatchQueue) transportQueue).isExecuting()) {
+        //     stopTask.run();
+        // } else {
+        //     getDispatchQueue().execute(stopTask);
+        // }
+        // This can be designed in a better way with a doStop function, specialized in SerialDispatchQueue.
         getDispatchQueue().execute(new Task() {
             public void run() {
                 if (_serviceState == STARTED) {

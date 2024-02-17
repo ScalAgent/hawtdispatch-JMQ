@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -88,6 +89,7 @@ final public class ActiveMetricsCollector extends MetricsCollector {
             return null;
         }
         Metrics rc = new Metrics();
+        rc.date = now;
         rc.durationNS = now-start;
         rc.queue = queue;
         rc.enqueued = enq;

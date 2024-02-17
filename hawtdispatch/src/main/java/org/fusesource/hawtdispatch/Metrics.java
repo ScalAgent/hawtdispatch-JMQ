@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent Distributed Technologies
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +25,11 @@ package org.fusesource.hawtdispatch;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public class Metrics {
+
+    /**
+     * Date (ns) when the metrics are captured
+     */
+    public long date;
 
     /**
      * How long the metrics gathered

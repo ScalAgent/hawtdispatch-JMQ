@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2024 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +19,8 @@
 package org.fusesource.hawtdispatch.internal;
 
 import org.fusesource.hawtdispatch.*;
+import org.fusesource.hawtdispatch.internal.ThreadDQActiveMetricsCollector.ThreadDispatchQueueMetrics;
+import org.fusesource.hawtdispatch.internal.pool.SimpleThread;
 
 import java.util.LinkedList;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -36,11 +39,14 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
     final WorkerThread thread;
     final GlobalDispatchQueue globalQueue;
     private final LinkedList<Task> sourceQueue= new LinkedList<Task>();
+    private volatile ThreadDQMetricsCollector metricsCollector = ThreadDQInactiveMetricsCollector.INSTANCE;
+    private volatile boolean profile=false;
 
     public ThreadDispatchQueue(GlobalDispatchQueue globalQueue, WorkerThread thread) {
         this.thread = thread;
         this.globalQueue = globalQueue;
-        this.label=thread.getName()+" pritority: "+globalQueue.getLabel();
+        this.label=thread.getName()+"_P-"+globalQueue.getLabel();
+        checkCollector();
         getDispatcher().track(this);
     }
 
@@ -80,11 +86,12 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
 
     public void execute(Task task) {
         // We don't have to take the synchronization hit
+        Task mtask = metricsCollector.track(task);
         if( Thread.currentThread()!=thread ) {
-            sharedTasks.add(task);
+            sharedTasks.add(mtask);
             thread.unpark();
         } else {
-            localTasks.add(task);
+            localTasks.add(mtask);
         }
     }
 
@@ -146,15 +153,57 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
         return QueueType.THREAD_QUEUE;
     }
 
-    public void profile(boolean on) {
+    public void profile(boolean profile) {
+        this.profile = profile;
+        checkCollector();
     }
 
     public boolean profile() {
-        return false;
+        return this.profile;
     }
 
+    private void checkCollector() {
+        if( profile() || getDispatcher().profile() ) {
+            if(  metricsCollector == ThreadDQInactiveMetricsCollector.INSTANCE ) {
+                metricsCollector = new ThreadDQActiveMetricsCollector(this);
+                getDispatcher().track(this);
+            }
+        } else {
+            if(  metricsCollector != ThreadDQInactiveMetricsCollector.INSTANCE ) {
+                metricsCollector = ThreadDQInactiveMetricsCollector.INSTANCE;
+                getDispatcher().untrack(this);
+            }
+        }
+    }
+
+    public long setLastGlobalPoll(long now) {
+      return metricsCollector.setLastGlobalPoll(now);
+    }
+    
+    public long setLastSourcePoll(long now) {
+      return metricsCollector.setLastSourcePoll(now);
+    }
+    
+    public long setLastSelect(long now) {
+      return metricsCollector.setLastSelect(now);
+    }
+
+    public long setParkTime(long now) {
+      return metricsCollector.setParkTime(now);
+    }
+    
     public Metrics metrics() {
-        return null;
+        Metrics baseMetrics = metricsCollector.metrics();
+        if (baseMetrics == null)
+          return null;
+        ThreadDispatchQueueMetrics metrics = (ThreadDispatchQueueMetrics) baseMetrics;
+        // fill in additional monitoring fields
+        metrics.localTasksSize = localTasks.size();
+        metrics.sharedTasksSize = sharedTasks.size();
+        metrics.sourceQueueSize = sourceQueue.size();
+        if (thread instanceof SimpleThread)
+          metrics.poolTasksSize = ((SimpleThread) thread).getPoolTasksSize();
+        return metrics;
     }
 
     public WorkerThread getThread() {
