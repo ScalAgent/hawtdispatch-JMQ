@@ -38,7 +38,7 @@
   <properties>
     <junit-version>4.7</junit-version>
     <asm-version>3.1</asm-version>
-    <log4j-version>1.2.14</log4j-version>
+    <!-- <log4j-version>1.2.14</log4j-version> -->
     <osgi-version>4.2.0</osgi-version>
   </properties>
 
@@ -55,12 +55,12 @@
       <version>4.0.0.Beta1-SNAPSHOT</version>
     </dependency>
 
-    <dependency>
+    <!-- <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>${junit-version}</version>
       <scope>test</scope>
-    </dependency>
+    </dependency> -->
     <dependency>
       <groupId>log4j</groupId>
       <artifactId>log4j</artifactId>

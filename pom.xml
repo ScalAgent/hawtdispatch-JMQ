@@ -41,7 +41,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     
     <junit-version>4.7</junit-version>
-    <log4j-version>1.2.14</log4j-version>
+    <!-- <log4j-version>1.2.14</log4j-version> -->
     <hawtbuf-version>1.11</hawtbuf-version>
   </properties>
 
