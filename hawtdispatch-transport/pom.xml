@@ -25,12 +25,12 @@
   <parent>
     <groupId>org.fusesource.hawtdispatch</groupId>
     <artifactId>hawtdispatch-project</artifactId>
-    <version>1.22.1-JMQ-SNAPSHOT</version>
+    <version>1.22.1-JMQ</version>
   </parent>
     
   <groupId>org.fusesource.hawtdispatch</groupId>
   <artifactId>hawtdispatch-transport</artifactId>
-  <version>1.22.1-JMQ-SNAPSHOT</version>
+  <version>1.22.1-JMQ</version>
   <packaging>bundle</packaging>
 
   <description>HawtDispatch Transport: Transport abstractions for HawtDispatch</description>
