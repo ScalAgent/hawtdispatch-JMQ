@@ -30,7 +30,7 @@
     
   <groupId>org.fusesource.hawtdispatch</groupId>
   <artifactId>hawtdispatch</artifactId>
-  <version>1.22.1-JMQ</version>
+  <version>1.22.2-JMQ-SNAPSHOT</version>
   <packaging>bundle</packaging>
 
   <description>HawtDispatch: The libdispatch style API for Java</description>

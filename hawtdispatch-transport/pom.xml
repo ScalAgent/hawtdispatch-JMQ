@@ -30,7 +30,7 @@
     
   <groupId>org.fusesource.hawtdispatch</groupId>
   <artifactId>hawtdispatch-transport</artifactId>
-  <version>1.22.1-JMQ</version>
+  <version>1.22.2-JMQ-SNAPSHOT</version>
   <packaging>bundle</packaging>
 
   <description>HawtDispatch Transport: Transport abstractions for HawtDispatch</description>
