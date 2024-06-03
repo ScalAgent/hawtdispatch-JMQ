@@ -25,7 +25,7 @@
   <parent>
     <groupId>org.fusesource.hawtdispatch</groupId>
     <artifactId>hawtdispatch-project</artifactId>
-    <version>1.22.1-JMQ</version>
+    <version>1.22.2-JMQ-SNAPSHOT</version>
   </parent>
     
   <groupId>org.fusesource.hawtdispatch</groupId>
