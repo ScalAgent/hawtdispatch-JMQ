@@ -1131,7 +1131,7 @@ public class TcpTransport extends ServiceBase implements Transport {
         this.sendBufferSize = sendBufferSize;
         if( channel!=null ) {
             try {
-                channel.socket().setReceiveBufferSize(sendBufferSize);
+                channel.socket().setSendBufferSize(sendBufferSize);
             } catch (SocketException ignore) {
             }
         }
