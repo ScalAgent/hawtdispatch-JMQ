@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent Distributed Technologies
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -63,10 +64,14 @@ import org.fusesource.hawtdispatch.util.BufferPools;
  *
  * The API provides two main modes relative to memory management, controlled by the forceCopy variable.
  * In the forceCopy=true mode, the base codec ensures that the active part of the buffer will remain available
- * and unchanged even after the apply upcall returns. In the forceCopy=false mode, the status of the buffer is
- * indicated by the readBufferReusable variable; if it is true, the derived codec must make sure to copy the data
- * that it wants to keep beyond the end of the apply call; if it is false, the derived codec may use the buffer
- * as in the forceCopy=true mode.
+ * and unchanged after the apply upcall returns; the buffer will eventually be freed by the Java garbage collector.
+ * In the forceCopy=false mode, the status of the buffer is indicated by the readBufferReusable variable;
+ * if it is true, the base codec may reuse the buffer as soon as the next call to the read function,
+ * the derived codec must then make sure to copy the data that it wants to keep beyond this point;
+ * if it is false, the derived codec may use the buffer as in the forceCopy=true mode.
+ * The codec.read is expected to be called in the transport drainInbound loop, which immediately executes
+ * the onTransportCommand upcall after reading a command. A reusable buffer may then be used by the derived codec
+ * until the onTransportCommand upcall returns.
  *
  * The base codec read algorithm may be further configured by some variables which can be initially set in derived classes.
  * - bufferPools: activates a pool management of write and read buffers
@@ -623,6 +628,12 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             lastReadIoSize = readChannel.read(readBuffer);
 
             if (lastReadIoSize == -1) {
+              // the connection has failed, the Codec will be released
+              // free what must be explicitely freed
+              if (readBufferReusable) {
+                readBufferPool.checkin(readBuffer.array());
+                readBuffer = null;
+              }
               throw new EOFException("Peer disconnected");
             } else if (lastReadIoSize == 0) {
               if (readStart == readBuffer.position() && readStart > 0) {
@@ -664,6 +675,14 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             }
           }
           command = nextDecodeAction.apply();
+
+          // if the read bytes are not enough for building a command, the derived codec returns null
+          // in that case the base code immediately performs a new iteration
+          // here is a case, observed during a test, which could be optimized:
+          // a client send a 1MB message; the broker is available and immediately tries to read the message;
+          // complete reading the message requires 16 loop iterations and separate channel.read calls,
+          // a few of them returning 0 bytes. Is it possible to identify such a case early, to exit from
+          // the reading loop, so that the next read returns more bytes and the total number of reads is reduced?
         }
       }
       if (LOG_BUFFER_RESIZE) {
