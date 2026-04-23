@@ -611,12 +611,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                 readBuffer.clear();
               } else {
                 if (LOG_BUFFER_RESIZE) {
-                  resizeNumber++;
-                  resizeTotal += loadedSize;
-                  logger.finest("codec read buffer compact for command #" + (commandNumber+1) +
-                                " " + bufferSummary(readBuffer) +
-                                ": " + loadedSize + " -> " + readBuffer.limit() +
-                                ", resize #" + resizeNumber + ", total size " + resizeTotal);
+                  logBufferResize("codec read buffer compact", loadedSize, readBuffer.limit());
                 }
                 readBuffer.flip().position(readStart);
                 readBuffer.compact();
@@ -634,12 +629,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                 newSize = Math.max(readBufferSize, wantedSize);
               }
               if (LOG_BUFFER_RESIZE && loadedSize > 0) {
-                resizeNumber++;
-                resizeTotal += loadedSize;
-                logger.finest("codec read buffer resize for command #" + (commandNumber+1) +
-                              " " + bufferSummary(readBuffer) +
-                              ": " + loadedSize + " -> " + newSize +
-                              ", resize #" + resizeNumber + ", total size " + resizeTotal);
+                logBufferResize("codec read buffer resize", loadedSize, newSize);
               }
               byte[] newByteArray;
               ByteBuffer newBuffer;
@@ -708,8 +698,10 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             if (forceCopy && readBufferReusable) {
               // the base Codec is responsible for duplicating the data before upcalling nextDecodeAction
               // duplicate exactly the read data to make sure that no additional data will be read after
-              if (LOG_BUFFER_RESIZE)
-                logBufferResize(readBuffer.position() - readStart);
+              if (LOG_BUFFER_RESIZE) {
+                int finalSize = readBuffer.position() - readStart;
+                logBufferResize("codec read buffer downsize", finalSize, finalSize);
+              }
               byte[] newByteArray = Arrays.copyOfRange(readBuffer.array(), readStart, readBuffer.position());
               ByteBuffer newBuffer = ByteBuffer.wrap(newByteArray);
               newBuffer.position(newByteArray.length);
@@ -751,12 +743,12 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
       return command;
     }
 
-    protected final void logBufferResize(int size) {
+    protected final void logBufferResize(String reason, int copySize, int finalSize) {
       resizeNumber++;
-      resizeTotal += size;
-      logger.finest("codec read buffer downsize for command #" + (commandNumber+1) +
+      resizeTotal += copySize;
+      logger.finest(reason + " for command #" + (commandNumber+1) +
                     " " + bufferSummary(readBuffer) +
-                    ": " + size + " -> " + size +
+                    ": " + copySize + " -> " + finalSize +
                     ", resize #" + resizeNumber + ", total size " + resizeTotal);
     }
 
