@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent Distributed Technologies
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +26,15 @@ import java.util.HashMap;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public class BufferPools {
+
+  // provides a singleton instance
+  private static BufferPools bufferPools;
+  public static synchronized BufferPools getBufferPools() {
+    if (bufferPools == null) {
+      bufferPools = new BufferPools();
+    }
+    return bufferPools;
+  }
 
     private final HashMap<Integer, BufferPool> pools = new HashMap<Integer, BufferPool>();
 
