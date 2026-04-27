@@ -40,27 +40,26 @@ import org.fusesource.hawtdispatch.util.BufferPools;
  * Provides an abstract base class to make implementing the ProtocolCodec interface
  * easier.
  *
- * The upcall API to the derived Codec is not originally well defined. It relates to the Action interface.
- * This API is more clearly defined in the new JMQAction interface.
- * The original (legacy) algorithm has been kept in the legacyRead function, with additional logs and comments.
+ * The interaction between this base class and the derived Codec has been clarified from the original
+ * algorithm of the hawtdispatch project.
  *
  * The new API, standard mode, is defined as follows:
- * - the derived Codec designs its decoding algorithm as JMQAction objects
- * - each JMQAction apply function is upcalled by the base Codec with readBuffer as input
+ * - the derived Codec designs its decoding algorithm as Action objects
+ * - each Action apply function is upcalled by the base Codec with readBuffer as input
  * - the base Codec fills in readBuffer by reading from the socket before upcalling nextDecodeAction,
  *   updating the buffer position
  * - the active part of the buffer is defined from the index readStart to the buffer position
- * - each JMQAction may define the expected size of this active part for the proper execution of apply;
- *   it is provided by the bytesWanted upcall, which is interpreted as a simple hint by the base codec,
+ * - the derived Codec may define the expected size of this active part for the proper execution of the next Action apply;
+ *   it is provided by the bytesWanted instance variable, which is interpreted as a simple hint by the base codec,
  *   the apply function will be upcalled even if less bytes may be actually read from the socket
- * - the base codec may resize and reallocate readBuffer; during this process it may forget all data preceding readStart;
- *   the active part is guaranteed to be preserved, and readStart is updated accordingly for the new buffer
- * - the ultimate objective of a JMQAction is to build a command; when it actually does so, it updates readStart
+ * - the base codec may resize and reallocate readBuffer; during this process it may discard all data preceding readStart;
+ *   the active part is guaranteed to be preserved, and readStart and readEnd are updated accordingly for the new buffer
+ * - the ultimate objective of an Action is to build a command; when it actually does so, it updates readStart
  *   to point to the beginning of the next message
- * - a JMQAction may also represent a simple step in the process of building the command; if it succeeds in this step,
+ * - an Action may also represent a simple step in the process of building the command; if it succeeds in this step,
  *   it may update the readStart pointer, thus informing the base codec that part of the buffer could be discarded
- * - a JMQAction may update the nextDecodeAction to set the next step of the decoding algorithm
- * - the first JMQAction to upcall is provided by the abstract function initialDecodeAction
+ * - an Action may update the nextDecodeAction to set the next step of the decoding algorithm
+ * - the first Action to upcall is provided by the abstract function initialDecodeAction
  *
  * The API provides two main modes relative to memory management, controlled by the forceCopy variable.
  * In the forceCopy=true mode, the base codec ensures that the active part of the buffer will remain available
@@ -81,12 +80,11 @@ import org.fusesource.hawtdispatch.util.BufferPools;
  */
 public abstract class AbstractProtocolCodec implements ProtocolCodec {
 
-    // use the original algorithm if true
-    protected boolean legacyAlgorithm = true;
-
     // debug logging variables
-    protected static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport.AbstractProtocolCodec");
-    protected static final boolean LOG_BUFFER_RESIZE = logger.isLoggable(Level.FINEST);
+    protected static final Logger readLogger = Logger.getLogger("org.fusesource.hawtdispatch.transport.AbstractProtocolCodec.read");
+    protected static final boolean LOG_BUFFER_READ = readLogger.isLoggable(Level.FINEST);
+    protected static final Logger copyLogger = Logger.getLogger("org.fusesource.hawtdispatch.transport.AbstractProtocolCodec.copy");
+    protected static final boolean LOG_BUFFER_COPY = copyLogger.isLoggable(Level.FINEST);
     protected int commandNumber = 0;
     protected int readNumber = 0;
     protected int resizeNumber = 0;
@@ -110,21 +108,10 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
 
     /**
      * Upcall interface to the derived Codec.
-     *
-     * Legacy API from the original fusesource project.
      */
     public static interface Action {
         /** apply the derived Codec action on the readBuffer */
         Object apply() throws IOException;
-    }
-
-    /**
-     * New upcall interface to the derived Codec.
-     */
-    public static interface JMQAction extends Action {
-        /** number of available bytes requested by the derived Codec to apply the Action,
-         * may be 0, in which case the base Codec chooses a default size to read */
-        int bytesWanted();
     }
 
     protected long readCounter = 0L;
@@ -147,10 +134,16 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     // can be initially set in derived classes
     protected boolean forceCopy = true;
 
-    // unclear semantics in the legacy algorithm, used to indicate the end or expected end of the next message
-    // in readBuffer. May be larger than the currently available bytes, triggering a buffer reallocation.
-    // Replaced in the new algorithm by the bytesWanted function of the JMQAction interface.
+    // unclear semantics in the original read algorithm, we believe its goal was twofold:
+    // - indicate the first byte in readBuffer unused by the derived class (main usage)
+    // - indicate the expected end of the next message, possibly beyond the end of readBuffer (used in read)
+    // it has been replaced in the new read algorithm by two elements:
+    // - the lastApplied local variable in the read function
+    // - the bytesWanted instance
+    // the variable is kept as its main semantics because some functions of this class need it,
+    // but it is no longer used in the algorithm of the read function
     protected int readEnd;
+
     // index of the first byte in readBuffer which is used as input by nextDecodeAction
     // bytes preceding readStart in readBuffer may be discarded by the base Codec when reallocating readBuffer.
     protected int readStart;
@@ -158,6 +151,10 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     protected int lastReadIoSize;
     // next derived Codec Action to apply on readBuffer
     protected Action nextDecodeAction;
+    // number of available bytes requested by the derived Codec to apply the Action,
+    // may be 0, in which case the base Codec chooses a default size to read
+    // initialized with 0 for backwards compatibility with the original algorithm
+    protected int bytesWanted = 0;
 
     @Override
     public void setTransport(Transport transport) {
@@ -165,8 +162,6 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
         this.readChannel = transport.getReadChannel();
         if( nextDecodeAction==null ) {
             nextDecodeAction = initialDecodeAction();
-            if (nextDecodeAction instanceof JMQAction)
-              legacyAlgorithm = false;
         }
         if( transport instanceof TcpTransport) {
             TcpTransport tcp = (TcpTransport) transport;
@@ -369,160 +364,6 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
 
     /**
      * Reads the next command from readChannel.
-     * This function implement the legacy algorithm, whose semantics is unclear. It should eventually be removed.
-     */
-    public Object legacyRead() throws IOException {
-        Object command = null;
-        while (command == null) {
-            if (directReadBuffer != null) {
-                while (directReadBuffer.hasRemaining()) {
-                    lastReadIoSize = readChannel.read(directReadBuffer);
-                    readCounter += lastReadIoSize;
-                    if (lastReadIoSize == -1) {
-                        throw new EOFException("Peer disconnected");
-                    } else if (lastReadIoSize == 0) {
-                        return null;
-                    }
-                }
-                command = nextDecodeAction.apply();
-            } else {
-                if (LOG_BUFFER_RESIZE) {
-                  logger.finest("codec read loop, readBuffer=" + bufferSummary(readBuffer) +
-                                " readStart=" + readStart + " readEnd=" + readEnd);
-                }
-                if (readBuffer==null || readEnd >= readBuffer.position()) {
-                    // the test checks if more reading from the socket is required
-                    // the second part of the test deserves some explanation: readEnd is interpreted as
-                    // an optional indication of the index of the command end from the derived Codec
-                    // if the read bytes cover the message end (i.e. readEnd < readBuffer.position()),
-                    // then no need to read from the socket. The limit case (i.e. readEnd = readBuffer.position())
-                    // is special. It may mean that the derived Codec has already read the available bytes
-                    // in a previous upcall, but it was not able to build a command. However it is not able,
-                    // or willing, to indicate the number of bytes it needs. It is then necessary to read more data.
-
-                    int readPos = 0;
-                    boolean candidateForCheckin = false;
-                    if( readBuffer!=null ) {
-                        readPos = readBuffer.position();
-                        candidateForCheckin = readBufferPool!=null && readStart == 0 && readBuffer.capacity() == readBufferPool.getBufferSize();
-                        // the readStart == 0 part of the test assumes that a command is always built from readStart
-                        // this is not the case in the JMQ MQTT Codec, where the command is built in two steps,
-                        // readStart being used as the beginning of each step
-                        // as a result, candidateForCheckin is always false with the JMQ MQTT Codec,
-                        // invalidating the pool part of the algorithm
-                    }
-
-                    if (readBuffer==null || readBuffer.remaining() == 0) {
-                        // this test checks if a new buffer needs to be allocated, however it does not cover
-                        // all the required cases
-                        // If the remaining bytes in readBuffer are not 0 but not enough to cover the expected
-                        // readEnd provided by the derived Codec, then the buffer should be reallocated right away
-                        // With this test, the current buffer shall be filled before we realize it is too small
-
-                        int loadedSize = readPos - readStart;
-                        int neededSize = readEnd - readStart;
-
-                        int newSize = 0;
-                        if( neededSize > loadedSize ) {
-                            newSize =  Math.max(readBufferSize, neededSize);
-                        } else {
-                            newSize = loadedSize+readBufferSize;
-                        }
-                        if (LOG_BUFFER_RESIZE && loadedSize > 0) {
-                          resizeNumber++;
-                          resizeTotal += loadedSize;
-                          logger.finest("codec read buffer resize for command #" + (commandNumber+1) +
-                                        " " + bufferSummary(readBuffer) +
-                                        ": " + loadedSize + " -> " + newSize +
-                                        ", resize #" + resizeNumber + ", total size " + resizeTotal);
-                        }
-
-                        byte[] newBuffer;
-                        if (loadedSize > 0) {
-                            newBuffer = Arrays.copyOfRange(readBuffer.array(), readStart, readStart + newSize);
-                        } else {
-                            if( readBufferPool!=null && newSize == readBufferPool.getBufferSize()) {
-                                newBuffer = readBufferPool.checkout();
-                            } else {
-                                newBuffer =  new byte[newSize];
-                            }
-                        }
-
-                        if( candidateForCheckin ) {
-                            readBufferPool.checkin(readBuffer.array());
-                        }
-
-                        readBuffer = ByteBuffer.wrap(newBuffer);
-                        ((java.nio.Buffer) readBuffer).position(loadedSize);
-                        readStart = 0;
-                        readEnd = neededSize;
-                    }
-
-                    if (LOG_BUFFER_RESIZE)
-                      readNumber++;
-                    lastReadIoSize = readChannel.read(readBuffer);
-
-                    readCounter += lastReadIoSize;
-                    if (lastReadIoSize == -1) {
-                        readCounter += 1; // to compensate for that -1
-                        throw new EOFException("Peer disconnected");
-                    } else if (lastReadIoSize == 0) {
-                        if ( readStart == readBuffer.position() ) {
-                            if (candidateForCheckin) {
-                                readBufferPool.checkin(readBuffer.array());
-                            }
-                            readStart = 0;
-                            readEnd = 0;
-                            readBuffer = null;
-                        }
-                        return null;
-                    }
-
-                    // if we did not read a full buffer.. then resize the buffer
-                    if( readBuffer.hasRemaining() && readEnd <= readBuffer.position() ) {
-                        // this test assumes that it is not necessary to duplicate a buffer which is full
-                        // or a buffer which covers the expected end of the command. Both are wrong.
-                        // If the derived Codec wants to directly use the data in the byte[] of the buffer,
-                        // and requires it to be available after the upcall returns, then the data needs to be
-                        // duplicated even if the buffer is full. This is the case with the JMQ MQTT Codec.
-                        // This semantics is not explicitely defined, but it seems very likely as we look at
-                        // the source code. We believe this must be fixed.
-                        // the second part of the test seems to indicate that readEnd is expected to be the exact
-                        // end of the message. In other words, if readEnd is greater than the read bytes, there is
-                        // no need to duplicate the data because the next upcall will return null. However this
-                        // semantics of readEnd is not well defined, and it could not fit a protocol which does not know
-                        // beforehand the size of its messages. We consider then that readEnd is only a hint,
-                        // and that the next upcall could return a command, even with a lower number of available bytes.
-                        // This would lead to a command built upon an unduplicated buffer, which must be fixed.
-                        ByteBuffer perfectSized = ByteBuffer.wrap(Arrays.copyOfRange(readBuffer.array(), 0, readBuffer.position()));
-                        ((java.nio.Buffer) perfectSized).position(readBuffer.position());
-                        if (LOG_BUFFER_RESIZE) {
-                          resizeNumber++;
-                          int size = readBuffer.position();
-                          resizeTotal += size;
-                          logger.finest("codec read buffer downsize for command #" + (commandNumber+1) +
-                                        " " + bufferSummary(readBuffer) +
-                                        ": " + size + " -> " + size +
-                                        ", resize #" + resizeNumber + ", total size " + resizeTotal);
-                        }
-
-                        if( candidateForCheckin ) {
-                            readBufferPool.checkin(readBuffer.array());
-                        }
-                        readBuffer = perfectSized;
-                    }
-                }
-                command = nextDecodeAction.apply();
-                assert ((readStart <= readEnd));
-            }
-        }
-        if (LOG_BUFFER_RESIZE)
-          commandNumber++;
-        return command;
-    }
-
-    /**
-     * Reads the next command from readChannel.
      * This function may return null if no input is available, or if not enough input is available
      * for decoding a command. The derived Codec is responsible for building the command through
      * the provided Action nextDecodeAction.
@@ -531,15 +372,17 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
      */
     @Override
     public Object read() throws IOException {
-      if (legacyAlgorithm)
-        return legacyRead();
+      if (LOG_BUFFER_READ)
+        logBufferRead("read start", ", bytesWanted=", Integer.toString(bytesWanted));
       // check first if the current readBuffer may be released
       if (readBufferReusable && readStart == readBuffer.position() && readStart > 0) {
         // this optimizes the case where a new message arrived in between successive calls to this read function
         // from the transport drainInbound loop
         // just reset the current buffer
         readBuffer.clear();
-        readStart = 0;
+        readEnd = readStart = 0;
+        if (LOG_BUFFER_READ)
+          logBufferRead("read initial compact");
       }
       Object command = null;
       // keep track of the last byte processed by the derived Codec
@@ -563,14 +406,13 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
           }
           command = nextDecodeAction.apply();
         } else {
-          if (LOG_BUFFER_RESIZE) {
-            logger.finest("codec read loop, readBuffer=" + bufferSummary(readBuffer) +
-                          " readStart=" + readStart + " wanted=" + ((JMQAction) nextDecodeAction).bytesWanted());
-          }
+          if (LOG_BUFFER_READ)
+            logBufferRead("read loop");
           // check if enough bytes are available for calling nextDecodeAction
           int loadedSize = readBuffer == null ? 0 : readBuffer.position() - readStart;
           int remainingSize = readBuffer == null ? 0 : readBuffer.remaining();
           int appliedSize = lastApplied - readStart;
+          // no need to update lastApplied after this point
 
           if (loadedSize > appliedSize) {
             // more bytes are available than those which were used/available in the previous apply call
@@ -579,7 +421,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
           } else {
             // appliedSize=loadedSize, the last apply call returned null and did not move readStart
             // need to fetch more input
-            int wantedSize = ((JMQAction) nextDecodeAction).bytesWanted();
+            int wantedSize = bytesWanted;
             boolean neededSizeUnknown = false;
             if (wantedSize <= loadedSize) {
               // the derived Codec may not know how much bytes are required, and it may choose to return 0.
@@ -600,6 +442,12 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                 wantedSize = loadedSize + minReadSize;
               }
             }
+            if (LOG_BUFFER_READ)
+              logBufferRead("read loop",
+                            ", loadedSize=", Integer.toString(loadedSize),
+                            ", remainingSize=", Integer.toString(remainingSize),
+                            ", appliedSize=", Integer.toString(appliedSize),
+                            ", wantedSize=", Integer.toString(wantedSize));
 
             // wantedSize > loadedSize
             // check if the current buffer may fit
@@ -609,15 +457,17 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               // we can make enough room by compacting the the buffer
               if (loadedSize == 0) {
                 readBuffer.clear();
+                readEnd = readStart = 0;
               } else {
-                if (LOG_BUFFER_RESIZE) {
-                  logBufferResize("codec read buffer compact", loadedSize, readBuffer.limit());
-                }
+                if (LOG_BUFFER_COPY)
+                  logBufferCopy("read loop compact", loadedSize, readBuffer.limit());
                 readBuffer.flip().position(readStart);
                 readBuffer.compact();
+                readEnd -= readStart;
+                readStart = 0;
               }
-              lastApplied -= readStart;
-              readStart = 0;
+              if (LOG_BUFFER_READ)
+                logBufferRead("read loop compact");
             } else {
               // need to reallocate a buffer
               int newSize;
@@ -628,9 +478,8 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                 // allocate the buffer at the bytesWanted size returned by the derived Codec
                 newSize = Math.max(readBufferSize, wantedSize);
               }
-              if (LOG_BUFFER_RESIZE && loadedSize > 0) {
-                logBufferResize("codec read buffer resize", loadedSize, newSize);
-              }
+              if (LOG_BUFFER_COPY && loadedSize > 0)
+                logBufferCopy("read loop resize", loadedSize, newSize);
               byte[] newByteArray;
               ByteBuffer newBuffer;
               boolean newReadBufferReusable = false;
@@ -661,14 +510,18 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               }
               readBuffer = newBuffer;
               readBufferReusable = newReadBufferReusable;
-              lastApplied -= readStart;
+              readEnd -= readStart;
               readStart = 0;
+              if (LOG_BUFFER_READ)
+                logBufferRead("read loop resize");
             }
 
             // actually read data from the socket
-            if (LOG_BUFFER_RESIZE)
+            if (LOG_BUFFER_COPY)
               readNumber++;
             lastReadIoSize = readChannel.read(readBuffer);
+            if (LOG_BUFFER_READ)
+              logBufferRead("read loop read");
 
             if (lastReadIoSize == -1) {
               // the connection has failed, the Codec will be released
@@ -676,6 +529,8 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               if (readBufferReusable) {
                 readBufferPool.checkin(readBuffer.array());
                 readBuffer = null;
+                if (LOG_BUFFER_READ)
+                  logBufferRead("read loop EOF");
               }
               throw new EOFException("Peer disconnected");
             } else if (lastReadIoSize == 0) {
@@ -687,8 +542,10 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                   readBufferPool.checkin(readBuffer.array());
                   readBufferReusable = false;
                 }
-                readStart = 0;
+                readEnd = readStart = 0;
                 readBuffer = null;
+                if (LOG_BUFFER_READ)
+                  logBufferRead("read loop release");
               }
               return null;
             }
@@ -698,17 +555,20 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
             if (forceCopy && readBufferReusable) {
               // the base Codec is responsible for duplicating the data before upcalling nextDecodeAction
               // duplicate exactly the read data to make sure that no additional data will be read after
-              if (LOG_BUFFER_RESIZE) {
+              if (LOG_BUFFER_COPY) {
                 int finalSize = readBuffer.position() - readStart;
-                logBufferResize("codec read buffer downsize", finalSize, finalSize);
+                logBufferCopy("read loop downsize", finalSize, finalSize);
               }
               byte[] newByteArray = Arrays.copyOfRange(readBuffer.array(), readStart, readBuffer.position());
               ByteBuffer newBuffer = ByteBuffer.wrap(newByteArray);
               newBuffer.position(newByteArray.length);
               readBufferPool.checkin(readBuffer.array());
               readBuffer = newBuffer;
+              readEnd -= readStart;
               readStart = 0;
               readBufferReusable = false;
+              if (LOG_BUFFER_READ)
+                logBufferRead("read loop final copy");
             }
           }
 
@@ -727,6 +587,8 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               }
             }
           }
+          if (LOG_BUFFER_READ)
+            logBufferRead("read loop applied");
 
           // if the read bytes are not enough for building a command, the derived codec returns null
           // in that case the base code immediately performs a new iteration
@@ -737,19 +599,32 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
           // the reading loop, so that the next read returns more bytes and the total number of reads is reduced?
         }
       }
-      if (LOG_BUFFER_RESIZE) {
+      if (LOG_BUFFER_COPY) {
         commandNumber++;
       }
       return command;
     }
 
-    protected final void logBufferResize(String reason, int copySize, int finalSize) {
+    protected final void logBufferCopy(String reason, int copySize, int finalSize) {
       resizeNumber++;
       resizeTotal += copySize;
-      logger.finest(reason + " for command #" + (commandNumber+1) +
-                    " " + bufferSummary(readBuffer) +
-                    ": " + copySize + " -> " + finalSize +
-                    ", resize #" + resizeNumber + ", total size " + resizeTotal);
+      copyLogger.finest("codec @" + Integer.toHexString(hashCode()) + " " +
+                        reason + " for command #" + (commandNumber+1) +
+                        " " + bufferSummary(readBuffer) +
+                        ": " + copySize + " -> " + finalSize +
+                        ", resize #" + resizeNumber + ", total size " + resizeTotal);
+    }
+
+    protected final void logBufferRead(String reason, String... msg) {
+      StringBuilder builder = new StringBuilder();
+      builder.append("codec @").append(Integer.toHexString(hashCode()));
+      builder.append(reason);
+      builder.append(", readBuffer=").append(bufferSummary(readBuffer));
+      builder.append(" readStart=").append(readStart);
+      builder.append(" readEnd=").append(readEnd);
+      for (String s: msg)
+        builder.append(s);
+      readLogger.finest(builder.toString());
     }
 
     protected Buffer readUntil(Byte octet) throws ProtocolException {
@@ -856,9 +731,10 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
       if (buf == null)
         return null;
       StringBuilder builder = new StringBuilder();
-      builder.append('[').append(buf.position());
-      builder.append(',').append(buf.limit());
-      builder.append(',').append(buf.capacity());
+      builder.append('[').append(buf.array());
+      builder.append(", pos=").append(buf.position());
+      builder.append(", lim=").append(buf.limit());
+      builder.append(", cap=").append(buf.capacity());
       builder.append(']');
       return builder.toString();
     }
