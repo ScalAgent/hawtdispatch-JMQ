@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2022 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +18,7 @@
 
 package org.fusesource.hawtdispatch.transport;
 
-import java.io.IOException;
 import java.net.SocketAddress;
-import java.net.URI;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.concurrent.Executor;
