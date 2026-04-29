@@ -76,6 +76,15 @@ import org.fusesource.hawtdispatch.util.BufferPools;
  * - bufferPools: activates a pool management of write and read buffers
  * - minReadSize: number of free bytes required before reallocating, if bytesWanted not relevant
  *
+ *
+ * Here is a possible enhancement of the API, enabling a derived codec to optimize allocation of buffers.
+ * We may consider allowing the derived codec to change the readBufferReusable status of the readBuffer from true to false
+ * during the apply upcall. This would allow the derived codec to avoid securing the buffer data in a copy of the buffer,
+ * and to directly use the buffer provided by the base codec (as in the forceCopy=true mode).
+ * The current code looks just fine for this enhancement, but it has not yet been validated.
+ * The reverse change by the derived codec of the readBufferReusable value, from false to true, must not be allowed.
+ *
+ *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public abstract class AbstractProtocolCodec implements ProtocolCodec {
@@ -87,7 +96,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     protected static final boolean LOG_BUFFER_ALLOC = allocLogger.isLoggable(Level.FINEST);
     protected static final Logger copyLogger = Logger.getLogger("org.fusesource.hawtdispatch.transport.AbstractProtocolCodec.copy");
     protected static final boolean LOG_BUFFER_COPY = copyLogger.isLoggable(Level.FINEST);
-    
+
     protected int commandNumber = 0;
     protected int readNumber = 0;
     protected int resizeNumber = 0;
@@ -625,7 +634,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
       return command;
     }
 
-    
+
     protected final void logBufferCopy(String reason, int copySize, int finalSize) {
       resizeNumber++;
       resizeTotal += copySize;
@@ -772,7 +781,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
         .append(']');
       return builder.toString();
     }
-    
+
     protected final String bytearraySummary(byte[] array) {
       if (array == null)
         return null;
