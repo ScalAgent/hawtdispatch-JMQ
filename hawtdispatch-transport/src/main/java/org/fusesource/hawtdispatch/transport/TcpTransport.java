@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
- * Copyright (C) 2022-2024 ScalAgent D.T
+ * Copyright (C) 2022 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -510,7 +511,8 @@ public class TcpTransport extends ServiceBase implements Transport {
             throw new Exception("TcpTransport.connect:" + Integer.toString(statusCode));
           }
         }
-
+        
+        // Should be always true (channel is in blocking mode).
         return success;
       } catch (Exception e) {
         throw new IOException(e);
@@ -651,7 +653,7 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
     // ==================================================
-    // Modification for use HTTP CONNECT # BEGIN
+    // Modification for use HTTP CONNECT # END
     // ==================================================
 
     public void _start(Task onCompleted) {
@@ -928,35 +930,37 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
     public void drainInbound() {
-        if (!getServiceState().isStarted() || readSource.isSuspended()) {
-            return;
-        }
-        try {
-            long initial = codec.getReadCounter();
-            // Only process up to 4 x the read buffer worth of data at a time so we can give
-            // other connections a chance to process their requests.
-            while( codec.getReadCounter()-initial < codec.getReadBufferSize()<<2 ) {
-                Object command = codec.read();
-                if ( command!=null ) {
-                    try {
-                        listener.onTransportCommand(command);
-                    } catch (Throwable e) {
-                        e.printStackTrace();
-                        onTransportFailure(new IOException("Transport listener failure."));
-                    }
-
-                    // the transport may be suspended after processing a command.
-                    if (getServiceState() == STOPPED || readSource.isSuspended()) {
-                        return;
-                    }
-                } else {
-                    return;
-                }
+      trace("TcpT.drainInbound start");
+      if (!getServiceState().isStarted() || readSource.isSuspended()) {
+        return;
+      }
+      try {
+        long initial = codec.getReadCounter();
+        // Only process up to 4 x the read buffer worth of data at a time so we can give
+        // other connections a chance to process their requests.
+        while( codec.getReadCounter()-initial < codec.getReadBufferSize()<<2 ) {
+          Object command = codec.read();
+          if ( command!=null ) {
+            try {
+              trace("TcpT.drainInbound onTransportCommand");
+              listener.onTransportCommand(command);
+            } catch (Throwable e) {
+              e.printStackTrace();
+              onTransportFailure(new IOException("Transport listener failure."));
             }
-            yieldSource.merge(1);
-        } catch (IOException e) {
-            onTransportFailure(e);
+
+            // the transport may be suspended after processing a command.
+            if (getServiceState() == STOPPED || readSource.isSuspended()) {
+              return;
+            }
+          } else {
+            return;
+          }
         }
+        yieldSource.merge(1);
+      } catch (IOException e) {
+        onTransportFailure(e);
+      }
     }
 
     public SocketAddress getLocalAddress() {
@@ -1058,8 +1062,10 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
     private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
+    private static final boolean DEBUG  = logger.isLoggable(Level.FINE);
     
     private void trace(String message) {
+      if (DEBUG)
         logger.fine(message);
     }
 
