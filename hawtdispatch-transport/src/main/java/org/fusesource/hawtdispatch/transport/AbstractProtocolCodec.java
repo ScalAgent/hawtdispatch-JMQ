@@ -385,7 +385,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     @Override
     public Object read() throws IOException {
       if (LOG_BUFFER_READ)
-        logBufferRead(" read start", ", bytesWanted=", Integer.toString(bytesWanted));
+        logBufferRead("read start", ", bytesWanted=", Integer.toString(bytesWanted));
       // check first if the current readBuffer may be released
       if (readBufferReusable && readStart == readBuffer.position() && readStart > 0) {
         // this optimizes the case where a new message arrived in between successive calls to this read function
@@ -498,7 +498,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               if(readBufferPool != null && newSize == readBufferPool.getBufferSize()) {
                 newByteArray = readBufferPool.checkout();
                 if (LOG_BUFFER_ALLOC)
-                  logBufferAlloc("BufferPool, checkout: ", bytearraySummary(newByteArray));
+                  logBufferAlloc("BufferPool, checkout", ": ", bytearraySummary(newByteArray));
                 newBuffer = ByteBuffer.wrap(newByteArray);
                 newReadBufferReusable = true;
                 if (loadedSize > 0) {
@@ -513,11 +513,11 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
                   // I am not sure it is possible or desirable to limit the copy to only the read bytes
                   newByteArray = Arrays.copyOfRange(readBuffer.array(), readStart, readStart + newSize);
                   if (LOG_BUFFER_ALLOC)
-                    logBufferAlloc("BufferPool, copy ", Integer.toString(readStart + newSize)," from ", bytearraySummary(readBuffer.array()), " to ", bytearraySummary(newByteArray));
+                    logBufferAlloc("BufferPool, copy", ": ", Integer.toString(readStart + newSize)," from ", bytearraySummary(readBuffer.array()), " to ", bytearraySummary(newByteArray));
                 } else {
                   newByteArray = new byte[newSize];
                   if (LOG_BUFFER_ALLOC)
-                    logBufferAlloc("BufferPool, allocate: ", bytearraySummary(newByteArray));
+                    logBufferAlloc("BufferPool, allocate", ": ", bytearraySummary(newByteArray));
                 }
                 newBuffer = ByteBuffer.wrap(newByteArray);
                 if (loadedSize > 0)
@@ -525,7 +525,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               }
               if(readBufferReusable) {
                 if (LOG_BUFFER_ALLOC)
-                  logBufferAlloc("BufferPool, checkin: ", bytearraySummary(readBuffer.array()));
+                  logBufferAlloc("BufferPool, checkin", ": ", bytearraySummary(readBuffer.array()));
                 readBufferPool.checkin(readBuffer.array());
               }
               readBuffer = newBuffer;
@@ -541,14 +541,14 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               readNumber++;
             lastReadIoSize = readChannel.read(readBuffer);
             if (LOG_BUFFER_READ)
-              logBufferRead("read loop channel.read: ", " -> ", Integer.toString(lastReadIoSize));
+              logBufferRead("read loop channel.read", " -> ", Integer.toString(lastReadIoSize));
 
             if (lastReadIoSize == -1) {
               // the connection has failed, the Codec will be released
               // free what must be explicitely freed
               if (readBufferReusable) {
                 if (LOG_BUFFER_ALLOC)
-                  logBufferAlloc("BufferPool, checkin: ", bytearraySummary(readBuffer.array()));
+                  logBufferAlloc("BufferPool, checkin", ": ", bytearraySummary(readBuffer.array()));
                 readBufferPool.checkin(readBuffer.array());
                 readBuffer = null;
                 if (LOG_BUFFER_READ)
@@ -556,13 +556,13 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               }
               throw new EOFException("Peer disconnected");
             } else if (lastReadIoSize == 0) {
-              if (readStart == readBuffer.position() && readStart > 0) {
+              if (readStart == readBuffer.position()) {
                 // no input has been read for the next command, good time to clean the current readBuffer
                 if (readBufferReusable) {
                   // return the buffer to the pool
                   // keep in mind that the pool is local to the thread and may be used next by another Codec
                   if (LOG_BUFFER_ALLOC)
-                    logBufferAlloc("BufferPool, checkin: ", bytearraySummary(readBuffer.array()));
+                    logBufferAlloc("BufferPool, checkin", ": ", bytearraySummary(readBuffer.array()));
                   readBufferPool.checkin(readBuffer.array());
                   readBufferReusable = false;
                 }
@@ -585,11 +585,11 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
               }
               byte[] newByteArray = Arrays.copyOfRange(readBuffer.array(), readStart, readBuffer.position());
               if (LOG_BUFFER_ALLOC)
-                logBufferAlloc("BufferPool, copy", Integer.toString(readBuffer.position()-readStart), " from ", bytearraySummary(readBuffer.array()), " to ", bytearraySummary(newByteArray));
+                logBufferAlloc("BufferPool, copy", ": ", Integer.toString(readBuffer.position()-readStart), " from ", bytearraySummary(readBuffer.array()), " to ", bytearraySummary(newByteArray));
               ByteBuffer newBuffer = ByteBuffer.wrap(newByteArray);
               newBuffer.position(newByteArray.length);
               if (LOG_BUFFER_ALLOC)
-                logBufferAlloc("BufferPool, checkin: ", bytearraySummary(readBuffer.array()));
+                logBufferAlloc("BufferPool, checkin", ": ", bytearraySummary(readBuffer.array()));
               readBufferPool.checkin(readBuffer.array());
               readBuffer = newBuffer;
               readEnd -= readStart;
@@ -629,7 +629,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
       }
       if (LOG_BUFFER_READ) {
         commandNumber++;
-        logBufferRead("codec return: ", command.toString());
+        logBufferRead("codec return", " -> ", command.toString());
       }
       return command;
     }
@@ -648,7 +648,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     protected final void logBufferAlloc(String reason, String... msg) {
       StringBuilder builder = new StringBuilder();
       builder.append("codec @").append(Integer.toHexString(hashCode()));
-      builder.append(reason);
+      builder.append(' ').append(reason);
       builder.append(", readBuffer=").append(bufferSummary(readBuffer));
       builder.append(" readStart=").append(readStart);
       builder.append(" readEnd=").append(readEnd);
@@ -660,7 +660,7 @@ public abstract class AbstractProtocolCodec implements ProtocolCodec {
     protected final void logBufferRead(String reason, String... msg) {
       StringBuilder builder = new StringBuilder();
       builder.append("codec@").append(Integer.toHexString(hashCode()));
-      builder.append(reason);
+      builder.append(' ').append(reason);
       builder.append(", readBuffer=").append(bufferSummary(readBuffer));
       builder.append(" readStart=").append(readStart);
       builder.append(" readEnd=").append(readEnd);
