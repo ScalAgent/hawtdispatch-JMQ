@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2022 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,13 +23,17 @@ import org.fusesource.hawtdispatch.Task;
 import javax.net.ssl.*;
 import java.io.EOFException;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static javax.net.ssl.SSLEngineResult.HandshakeStatus.*;
 import static javax.net.ssl.SSLEngineResult.Status.*;
@@ -39,6 +44,9 @@ import static javax.net.ssl.SSLEngineResult.Status.*;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 public class SslTransport extends TcpTransport implements SecuredSession {
+
+  private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
+  private static final boolean DEBUG  = logger.isLoggable(Level.FINE);
 
     /**
      * Maps uri schemes to a protocol algorithm names.
@@ -432,7 +440,7 @@ public class SslTransport extends TcpTransport implements SecuredSession {
 
                 case NEED_UNWRAP:
                     if( secure_read(ByteBuffer.allocate(0)) == -1) {
-                        throw new EOFException("Peer disconnected during ssl handshake");
+                        throw new EOFException("Peer disconnected during ssl handshake from " + getRemoteAddress());
                     }
                     break;
 
@@ -441,11 +449,21 @@ public class SslTransport extends TcpTransport implements SecuredSession {
                     break;
 
                 default:
-                    System.err.println("Unexpected ssl engine handshake status: "+ engine.getHandshakeStatus());
-                    break;
+                  logger.log(Level.WARNING, "Unexpected ssl engine handshake status (" + engine.getHandshakeStatus() + ") from " + getRemoteAddress());
+                  break;
             }
         } catch (IOException e ) {
-            onTransportFailure(e);
+          if (DEBUG)
+            logger.log(Level.WARNING, "Error during SSL handshaking from " + getRemoteAddress() + ", cause:", e);
+          else
+            logger.log(Level.WARNING, "Error during SSL handshaking from " + getRemoteAddress() + "\n\t\tcause: " + e);
+          onTransportFailure(e);
+        } catch (Throwable e ) {
+          // Note (AF): Should never happen.
+          if (DEBUG)
+            logger.log(Level.WARNING, "Problem during SSL handshaking from " + getRemoteAddress() + ", cause:", e);
+          else
+            logger.log(Level.WARNING, "Problem during SSL handshaking from " + getRemoteAddress() + "\n\t\tcause: " + e);
         } finally {
             if( engine.getHandshakeStatus() == NOT_HANDSHAKING ) {
                 drainOutboundSource.merge(1);
