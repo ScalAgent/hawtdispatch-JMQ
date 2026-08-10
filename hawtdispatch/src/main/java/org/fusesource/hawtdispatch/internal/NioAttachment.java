@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +26,7 @@ import java.util.ArrayList;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 final class NioAttachment {
-    
+
     final ArrayList<NioDispatchSource> sources = new ArrayList<NioDispatchSource>(2);
     SelectionKey key;
 
@@ -42,6 +43,8 @@ final class NioAttachment {
         for(NioDispatchSource source: sources) {
             int ops = source.interestOps & readyOps;
             if( ops !=0 ) {
+                // source is only interested in ops, not readyOps, the call should probably be
+                // source.fire(ops);
                 source.fire(readyOps);
             }
         }

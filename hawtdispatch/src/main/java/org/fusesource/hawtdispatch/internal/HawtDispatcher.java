@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +18,25 @@
 
 package org.fusesource.hawtdispatch.internal;
 
-import org.fusesource.hawtdispatch.*;
-import org.fusesource.hawtdispatch.jmx.JmxService;
+import static org.fusesource.hawtdispatch.DispatchPriority.DEFAULT;
 
 import java.nio.channels.SelectableChannel;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
-import static org.fusesource.hawtdispatch.DispatchPriority.DEFAULT;
+import org.fusesource.hawtdispatch.CustomDispatchSource;
+import org.fusesource.hawtdispatch.DispatchPriority;
+import org.fusesource.hawtdispatch.DispatchQueue;
+import org.fusesource.hawtdispatch.DispatchSource;
+import org.fusesource.hawtdispatch.Dispatcher;
+import org.fusesource.hawtdispatch.EventAggregator;
+import org.fusesource.hawtdispatch.Metrics;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.jmx.JmxService;
 
 
 /**
@@ -35,6 +45,9 @@ import static org.fusesource.hawtdispatch.DispatchPriority.DEFAULT;
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 final public class HawtDispatcher implements Dispatcher {
+
+  public static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.HawtDispatcher");
+  public static final boolean DEBUG  = logger.isLoggable(Level.FINE);
 
     public final static ThreadLocal<HawtDispatchQueue> CURRENT_QUEUE = new ThreadLocal<HawtDispatchQueue>();
 
@@ -77,14 +90,25 @@ final public class HawtDispatcher implements Dispatcher {
         timerThread.start();
     }
 
+    @Override
     public void shutdown() {
 
         // shutdown == 1 stop new dispatch after requests..
         if( shutdownState.compareAndSet(0, 1) ) {
+            if (DEBUG)
+              logger.fine("shutdown 1");
+            // shutdown all NioManagers first, as that will trigger more tasks
+            DEFAULT_QUEUE.shutdown(1);
+            if( LOW_QUEUE!=null )
+              LOW_QUEUE.shutdown(1);
+            if(HIGH_QUEUE!=null)
+              HIGH_QUEUE.shutdown(1);
+
             // give every one a chance to notice
             // the state change.
             sleep(100);
             timerThread.shutdown(new Task() {
+                @Override
                 public void run() {
                     // all outstanding timers will have been
                     // queued for execution
@@ -93,10 +117,14 @@ final public class HawtDispatcher implements Dispatcher {
                     // shutdown == 2 stop queues from accepting
                     // new executions
                     shutdownState.set(2);
+                    if (DEBUG)
+                      logger.fine("shutdown 2");
                     // new state change..
                     sleep(100);
 
                     // Wait for the execution queues to drain..
+                    if (DEBUG)
+                      logger.fine("shutdown global dispatch queue");
                     DEFAULT_QUEUE.shutdown();
                     if( LOW_QUEUE!=null ) {
                         LOW_QUEUE.shutdown();
@@ -107,9 +135,17 @@ final public class HawtDispatcher implements Dispatcher {
 
                     // shutdown == 3 means we are fully drained.
                     shutdownState.set(3);
+                    if (DEBUG)
+                      logger.fine("shutdown 3");
                 }
             }, DEFAULT_QUEUE);
 
+            try {
+              int timeout = Integer.getInteger("org.fusesource.hawtdispatch.shutdownTimeout", 5000);
+              timerThread.join(timeout);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
         }
 
         if( this.jmx ) {
@@ -128,6 +164,7 @@ final public class HawtDispatcher implements Dispatcher {
         }
     }
 
+    @Override
     public void restart() {
         if( shutdownState.compareAndSet(3, 0) ) {
             timerThread = new TimerThread(this);
@@ -144,10 +181,12 @@ final public class HawtDispatcher implements Dispatcher {
         }
     }
 
+    @Override
     public DispatchQueue getGlobalQueue() {
         return getGlobalQueue(DEFAULT);
     }
 
+    @Override
     public GlobalDispatchQueue getGlobalQueue(DispatchPriority priority) {
         switch (priority) {
             case DEFAULT:
@@ -178,30 +217,43 @@ final public class HawtDispatcher implements Dispatcher {
         throw new AssertionError("switch missing case");
     }
 
+    @Override
     public SerialDispatchQueue createQueue(String label) {
         SerialDispatchQueue rc = new SerialDispatchQueue(label);
+        if (DEBUG)
+          logger.fine("create queue: " + rc);
         rc.setTargetQueue(getGlobalQueue());
         rc.profile(profile);
         return rc;
     }
 
+    @Override
     public DispatchSource createSource(SelectableChannel channel, int interestOps, DispatchQueue queue) {
-        return new NioDispatchSource(this, channel, interestOps, queue);
+        NioDispatchSource rc = new NioDispatchSource(this, channel, interestOps, queue);
+        if (DEBUG)
+          logger.fine("create source: " + rc);
+        return rc;
     }
 
+    @Override
     public <Event, MergedEvent> CustomDispatchSource<Event, MergedEvent> createSource(EventAggregator<Event, MergedEvent> aggregator, DispatchQueue queue) {
-        return new HawtCustomDispatchSource(this, aggregator, queue);
+        HawtCustomDispatchSource rc = new HawtCustomDispatchSource(this, aggregator, queue);
+        if (DEBUG)
+          logger.fine("create source: " + rc);
+        return rc;
     }
 
     public String getLabel() {
         return label;
     }
 
+    @Override
     public DispatchQueue getCurrentQueue() {
         return CURRENT_QUEUE.get();
     }
 
 
+    @Override
     public ThreadDispatchQueue getCurrentThreadQueue() {
         WorkerThread thread = WorkerThread.currentWorkerThread();
         if( thread ==null ) {
@@ -210,6 +262,7 @@ final public class HawtDispatcher implements Dispatcher {
         return thread.getDispatchQueue();
     }
 
+    @Override
     public DispatchQueue[] getThreadQueues(DispatchPriority priority) {
         return getGlobalQueue(priority).getThreadQueues();
     }
@@ -229,14 +282,17 @@ final public class HawtDispatcher implements Dispatcher {
         }
     }
 
+    @Override
     public void profile(boolean on) {
         profile = on;
     }
 
+    @Override
     public boolean profile() {
         return profile;
     }
 
+    @Override
     public List<Metrics> metrics() {
         synchronized (queues) {
             ArrayList<Metrics> rc = new ArrayList<Metrics>();

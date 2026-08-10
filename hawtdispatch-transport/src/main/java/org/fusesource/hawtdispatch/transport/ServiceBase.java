@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
- * Copyright (C) 2024 ScalAgent Distributed Technologies
+ * Copyright (C) 2024 - 2026 ScalAgent Distributed Technologies
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,13 @@
 
 package org.fusesource.hawtdispatch.transport;
 
+import java.util.LinkedList;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
 import org.fusesource.hawtdispatch.DispatchQueue;
 import org.fusesource.hawtdispatch.Task;
 import org.fusesource.hawtdispatch.TaskWrapper;
-
-import java.util.LinkedList;
 
 /**
  * <p>
@@ -33,7 +35,16 @@ import java.util.LinkedList;
  */
 public abstract class ServiceBase {
 
+  // setting up the logs may have a strong impact on performances of hawtdispatch threads
+  private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
+  private static final boolean DEBUG  = logger.isLoggable(Level.FINE);
+  private static final void trace(String message) {
+    if (DEBUG)
+      logger.fine(message);
+  }
+
     public static class State {
+        @Override
         public String toString() {
             return getClass().getSimpleName();
         }
@@ -61,21 +72,37 @@ public abstract class ServiceBase {
         }
     }
 
-    public static final State CREATED = new State();
+    public static final State CREATED = new State() {
+      @Override
+      public String toString() {
+          return "CREATED";
+      }
+    };
     public static class STARTING extends CallbackSupport {
+        @Override
         public boolean isStarting() {
             return true;
         }
     }
     public static final State STARTED = new State() {
+        @Override
         public boolean isStarted() {
             return true;
+        }
+        @Override
+        public String toString() {
+            return "STARTED";
         }
     };
     public static class STOPPING extends CallbackSupport {
     }
 
-    public static final State STOPPED = new State();
+    public static final State STOPPED = new State() {
+      @Override
+      public String toString() {
+          return "STOPPED";
+      }
+    };
 
 
     protected State _serviceState = CREATED;
@@ -85,33 +112,47 @@ public abstract class ServiceBase {
     }
 
     final public void start(final Task onCompleted) {
-        getDispatchQueue().execute(new Task() {
-            public void run() {
-                if (_serviceState == CREATED ||
-                        _serviceState == STOPPED) {
-                    final STARTING state = new STARTING();
-                    state.add(onCompleted);
-                    _serviceState = state;
-                    _start(new Task() {
-                        public void run() {
-                            _serviceState = STARTED;
-                            state.done();
-                        }
-                    });
-                } else if (_serviceState instanceof STARTING) {
-                    ((STARTING) _serviceState).add(onCompleted);
-                } else if (_serviceState == STARTED) {
-                    if (onCompleted != null) {
-                        onCompleted.run();
-                    }
-                } else {
-                    if (onCompleted != null) {
-                        onCompleted.run();
-                    }
-                    error("start should not be called from state: " + _serviceState);
-                }
+      String taskName = Task.DEBUG_TASK ? "start task for " + getDispatchQueue().getLabel() : null;
+      Task startTask = new Task(taskName) {
+        @Override
+        public void run() {
+          trace("start transport, _serviceState=" + _serviceState);
+          if (_serviceState == CREATED ||
+              _serviceState == STOPPED) {
+            final STARTING state = new STARTING();
+            state.add(onCompleted);
+            _serviceState = state;
+            String taskName = Task.DEBUG_TASK ? "_start onCompleted task for " + getDispatchQueue().getLabel() : null;
+            _start(new Task(taskName) {
+              @Override
+              public void run() {
+                trace("execute _start onCompleted callback");
+                _serviceState = STARTED;
+                state.done();
+              }
+            });
+          } else if (_serviceState instanceof STARTING) {
+            ((STARTING) _serviceState).add(onCompleted);
+          } else if (_serviceState == STARTED) {
+            if (onCompleted != null) {
+              onCompleted.run();
             }
-        });
+          } else {
+            // only possible state is STOPPING
+            if (onCompleted != null) {
+              // is it really relevant to execute the completion task in this case?
+              // the final state will be STOPPED and not STARTED
+              onCompleted.run();
+            }
+            error("start should not be called from state: " + _serviceState);
+          }
+        }
+      };
+      if (getDispatchQueue().isExecuting()) {
+        startTask.run();
+      } else {
+        getDispatchQueue().execute(startTask);
+      }
     }
 
     final public void stop(final Runnable onCompleted) {
@@ -119,25 +160,20 @@ public abstract class ServiceBase {
     }
 
     final public void stop(final Task onCompleted) {
-        // TODO possible improvement
-        // if we are already executing in the proper SerialDispatchQueue,
-        // then execute the task inline in order to avoid unnecessary parallelism
-        // DispatchQueue transportQueue = getDispatchQueue();
-        // if (transportQueue instanceof SerialDispatchQueue &&
-        //     ((SerialDispatchQueue) transportQueue).isExecuting()) {
-        //     stopTask.run();
-        // } else {
-        //     getDispatchQueue().execute(stopTask);
-        // }
-        // This can be designed in a better way with a doStop function, specialized in SerialDispatchQueue.
-        getDispatchQueue().execute(new Task() {
+        String taskName = Task.DEBUG_TASK ? "stop task for " + getDispatchQueue().getLabel() : null;
+        Task stopTask = new Task(taskName) {
+            @Override
             public void run() {
+              trace("stop transport, _serviceState=" + _serviceState);
                 if (_serviceState == STARTED) {
                     final STOPPING state = new STOPPING();
                     state.add(onCompleted);
                     _serviceState = state;
-                    _stop(new Task() {
+                    String taskName = Task.DEBUG_TASK ? "_stop onCompleted task for " + getDispatchQueue().getLabel() : null;
+                    _stop(new Task(taskName) {
+                        @Override
                         public void run() {
+                          trace("execute _stop onCompleted callback");
                             _serviceState = STOPPED;
                             state.done();
                         }
@@ -155,18 +191,24 @@ public abstract class ServiceBase {
                     error("stop should not be called from state: " + _serviceState);
                 }
             }
-        });
+        };
+        if (getDispatchQueue().isExecuting()) {
+          stopTask.run();
+        } else {
+          getDispatchQueue().execute(stopTask);
+        }
     }
 
     private void error(String msg) {
         try {
             throw new AssertionError(msg);
-        } catch (Exception e) {
+        } catch (AssertionError e) {
+            logger.warning(e.getMessage());
             e.printStackTrace();
         }
     }
 
-    protected State getServiceState() {
+    final protected State getServiceState() {
         return _serviceState;
     }
 

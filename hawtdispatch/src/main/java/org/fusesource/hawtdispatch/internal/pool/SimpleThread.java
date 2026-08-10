@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
- * Copyright (C) 2024 ScalAgent D.T
+ * Copyright (C) 2024 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,15 +18,15 @@
 
 package org.fusesource.hawtdispatch.internal.pool;
 
-import org.fusesource.hawtdispatch.Task;
-import org.fusesource.hawtdispatch.internal.NioManager;
-import org.fusesource.hawtdispatch.internal.ThreadDispatchQueue;
-import org.fusesource.hawtdispatch.internal.WorkerThread;
+import static java.lang.String.format;
 
 import java.io.IOException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static java.lang.String.format;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.internal.NioManager;
+import org.fusesource.hawtdispatch.internal.ThreadDispatchQueue;
+import org.fusesource.hawtdispatch.internal.WorkerThread;
 
 /**
  */
@@ -80,8 +80,15 @@ public class SimpleThread extends WorkerThread {
                     pool.park(this);
                     threadQueue.setParkTime(0);
                 } else {
+                    if (Task.DEBUG_TASK)
+                      Task.taskLogger.fine("Execute task " + task);
                     task.run();
                 }
+            }
+            try {
+              nioManager.shutdown(2);
+            } catch (IOException e) {
+              // ignore
             }
         } finally {
             debug("run end");
@@ -100,7 +107,7 @@ public class SimpleThread extends WorkerThread {
     public static final boolean DEBUG = false;
     protected void debug(String str, Object... args) {
         if (DEBUG) {
-            System.out.println(format("[DEBUG] SimpleThread %s: %s", getName(), format(str, args)));
+            System.out.println(format("DEBUG %1$tT.%1$tL | SimpleThread %2$s | %3$s", System.currentTimeMillis(), getName(), format(str, args)));
         }
     }
     protected void debug(Throwable thrown, String str, Object... args) {

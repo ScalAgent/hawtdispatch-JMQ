@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
- * Copyright (C) 2024 ScalAgent D.T
+ * Copyright (C) 2024 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,16 +18,21 @@
 
 package org.fusesource.hawtdispatch.internal;
 
-import org.fusesource.hawtdispatch.*;
-import org.fusesource.hawtdispatch.internal.ThreadDQActiveMetricsCollector.ThreadDispatchQueueMetrics;
-import org.fusesource.hawtdispatch.internal.pool.SimpleThread;
-
+import java.io.IOException;
 import java.util.LinkedList;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 
+import org.fusesource.hawtdispatch.DispatchPriority;
+import org.fusesource.hawtdispatch.DispatchQueue;
+import org.fusesource.hawtdispatch.Metrics;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.TaskWrapper;
+import org.fusesource.hawtdispatch.internal.ThreadDQActiveMetricsCollector.ThreadDispatchQueueMetrics;
+import org.fusesource.hawtdispatch.internal.pool.SimpleThread;
+
 /**
- * 
+ *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
 final public class ThreadDispatchQueue implements HawtDispatchQueue {
@@ -50,40 +55,49 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
         getDispatcher().track(this);
     }
 
+    @Override
     public LinkedList<Task> getSourceQueue() {
         return sourceQueue;
     }
 
+    @Override
     public String getLabel() {
         return label;
     }
 
+    @Override
     public void setLabel(String label) {
         this.label = label;
     }
 
+    @Override
     public boolean isExecuting() {
         return globalQueue.dispatcher.getCurrentThreadQueue() == this;
     }
 
+    @Override
     public void assertExecuting() {
         assert isExecuting() : getDispatcher().assertMessage(getLabel());
     }
 
+    @Override
     public HawtDispatcher getDispatcher() {
         return globalQueue.dispatcher;
     }
 
+    @Override
     @Deprecated
     public void execute(Runnable runnable) {
         this.execute(new TaskWrapper(runnable));
     }
 
+    @Override
     @Deprecated
     public void executeAfter(long delay, TimeUnit unit, Runnable runnable) {
         this.executeAfter(delay, unit, new TaskWrapper(runnable));
     }
 
+    @Override
     public void execute(Task task) {
         // We don't have to take the synchronization hit
         Task mtask = metricsCollector.track(task);
@@ -103,61 +117,74 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
         return rc;
     }
 
+    @Override
     public void executeAfter(long delay, TimeUnit unit, Task task) {
         getDispatcher().timerThread.addRelative(task, this, delay, unit);
     }
 
+    @Override
     public void resume() {
         throw new UnsupportedOperationException();
     }
 
+    @Override
     public void suspend() {
         throw new UnsupportedOperationException();
     }
 
+    @Override
     public boolean isSuspended() {
         throw new UnsupportedOperationException();
     }
 
+    @Override
     public void setTargetQueue(DispatchQueue queue) {
         throw new UnsupportedOperationException();
     }
-    
+
+    @Override
     public HawtDispatchQueue getTargetQueue() {
         return null;
     }
-    
+
     public DispatchPriority getPriority() {
         return globalQueue.getPriority();
     }
 
+    @Override
     public GlobalDispatchQueue isGlobalDispatchQueue() {
         return null;
     }
 
+    @Override
     public SerialDispatchQueue isSerialDispatchQueue() {
         return null;
     }
 
+    @Override
     public ThreadDispatchQueue isThreadDispatchQueue() {
         return this;
     }
 
+    @Override
     public DispatchQueue createQueue(String label) {
         DispatchQueue rc = globalQueue.dispatcher.createQueue(label);
         rc.setTargetQueue(this);
         return rc;
     }
 
+    @Override
     public QueueType getQueueType() {
         return QueueType.THREAD_QUEUE;
     }
 
+    @Override
     public void profile(boolean profile) {
         this.profile = profile;
         checkCollector();
     }
 
+    @Override
     public boolean profile() {
         return this.profile;
     }
@@ -179,11 +206,11 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
     public long setLastGlobalPoll(long now) {
       return metricsCollector.setLastGlobalPoll(now);
     }
-    
+
     public long setLastSourcePoll(long now) {
       return metricsCollector.setLastSourcePoll(now);
     }
-    
+
     public long setLastSelect(long now) {
       return metricsCollector.setLastSelect(now);
     }
@@ -191,7 +218,33 @@ final public class ThreadDispatchQueue implements HawtDispatchQueue {
     public long setParkTime(long now) {
       return metricsCollector.setParkTime(now);
     }
-    
+
+    @Override
+    public void shutdown(int level) {
+      switch (level) {
+      case 1:
+        // shutdown the thread's NioManager
+        String taskName = Task.DEBUG_TASK ? "shutdown " + level + " for " + getLabel() : null;
+        Task shutdownTask = new Task(taskName) {
+          @Override
+          public void run() {
+            try {
+              thread.getNioManager().shutdown(1);
+            } catch (IOException e) {
+              // TODO Auto-generated catch block
+              e.printStackTrace();
+            }
+          }
+        };
+        execute(shutdownTask);
+        break;
+      case 2:
+        // currently not called
+        // the shutdown state 2 is handled directly in the SimpleThread.run main loop
+      }
+    }
+
+    @Override
     public Metrics metrics() {
         Metrics baseMetrics = metricsCollector.metrics();
         if (baseMetrics == null)

@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
- * Copyright (C) 2024 ScalAgent D.T
+ * Copyright (C) 2024 - 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,14 +18,18 @@
 
 package org.fusesource.hawtdispatch.internal.pool;
 
-import org.fusesource.hawtdispatch.DispatchPriority;
-import org.fusesource.hawtdispatch.Task;
-import org.fusesource.hawtdispatch.internal.*;
+import static java.lang.String.format;
 
 import java.io.IOException;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static java.lang.String.format;
+import org.fusesource.hawtdispatch.DispatchPriority;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.internal.GlobalDispatchQueue;
+import org.fusesource.hawtdispatch.internal.HawtThreadGroup;
+import org.fusesource.hawtdispatch.internal.NioManager;
+import org.fusesource.hawtdispatch.internal.WorkerPool;
+import org.fusesource.hawtdispatch.internal.WorkerThread;
 
 /**
  */
@@ -60,6 +64,7 @@ public class SimplePool implements WorkerPool {
         return 0;
     }
 
+    @Override
     public void start() {
         shutdown = false;
         for (int i=0; i < threads.length; i++) {
@@ -80,11 +85,13 @@ public class SimplePool implements WorkerPool {
         return w;
     }
 
+    @Override
     public WorkerThread[] getThreads() {
         return threads;
     }
 
 
+    @Override
     public void shutdown() {
         try {
             // wait for the queue to get drained..
@@ -105,6 +112,7 @@ public class SimplePool implements WorkerPool {
         }
     }
 
+    @Override
     public void execute(Task runnable) {
         WorkerThread current = WorkerThread.currentWorkerThread();
         tasks.add(runnable);
@@ -136,12 +144,12 @@ public class SimplePool implements WorkerPool {
     }
 
     public static final boolean DEBUG = false;
-    protected void debug(String str, Object... args) {
+    protected final void debug(String str, Object... args) {
         if (DEBUG) {
             System.out.println(format("[DEBUG] SimplePool %0#10x: ", System.identityHashCode(this))+format(str, args));
         }
     }
-    protected void debug(Throwable thrown, String str, Object... args) {
+    protected final void debug(Throwable thrown, String str, Object... args) {
         if (DEBUG) {
             if (str != null) {
                 debug(str, args);

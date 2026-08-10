@@ -2,6 +2,7 @@
  * Copyright (c) 2008-2009 Apple Inc. All rights reserved.
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,7 +58,7 @@ public interface DispatchQueue extends DispatchObject, Executor {
         /**
          * A thread queue is a dispatch queue associated with a specific
          * thread.  It executes runnable objects submitted to them
-         * serially in FIFO order.   
+         * serially in FIFO order.
          */
         THREAD_QUEUE
     }
@@ -97,6 +98,7 @@ public interface DispatchQueue extends DispatchObject, Executor {
      * @param runnable
      * The runnable to submit to the dispatch queue.
      */
+    @Override
     void execute(Runnable runnable);
 
     /**
@@ -239,4 +241,10 @@ public interface DispatchQueue extends DispatchObject, Executor {
      */
     Metrics metrics();
 
+    /**
+     * Performs any specific action related to the shutdown state of the Dispatcher.
+     *
+     * @param level new shutdown state of the Dispatcher
+     */
+    void shutdown(int level);
 }

@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +18,18 @@
 
 package org.fusesource.hawtdispatch.internal;
 
-import org.fusesource.hawtdispatch.*;
+import static java.lang.String.format;
 
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static java.lang.String.format;
+import org.fusesource.hawtdispatch.CustomDispatchSource;
+import org.fusesource.hawtdispatch.DispatchQueue;
+import org.fusesource.hawtdispatch.EventAggregator;
+import org.fusesource.hawtdispatch.OrderedEventAggregator;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.TaskWrapper;
 
 /**
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
@@ -48,6 +54,7 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
         setTargetQueue(queue);
     }
 
+    @Override
     public MergedEvent getData() {
         final MergedEvent rc = firedEvent.get();
         firedEvent.set(null);
@@ -57,6 +64,7 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
     protected final ConcurrentLinkedQueue<MergedEvent> externalQueue = new ConcurrentLinkedQueue<MergedEvent>();
     protected final AtomicLong size = new AtomicLong();
 
+    @Override
     public void merge(Event event) {
         debug("merge called");
         WorkerThread thread = WorkerThread.currentWorkerThread();
@@ -86,6 +94,7 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
         }
     }
 
+    @Override
     public void run() {
         debug("deferred fire event executing");
         fireEvent(outboundEvent.get());
@@ -94,7 +103,9 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
 
     private void fireEvent(final MergedEvent event) {
         if( event!=null ) {
-            targetQueue.execute(new Task() {
+            String taskName = Task.DEBUG_TASK ? "HawtCustomDispatchSource fire event for " + targetQueue.getLabel() : null;
+            targetQueue.execute(new Task(taskName) {
+                @Override
                 public void run() {
                     if( isCanceled() ) {
                         debug("canceled");
@@ -145,9 +156,12 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
         onResume();
     }
 
+    @Override
     public void cancel() {
         if( canceled.compareAndSet(false, true) ) {
-            targetQueue.execute(new Task() {
+            String taskName = Task.DEBUG_TASK ? "HawtCustomDispatchSource cancel" : null;
+            targetQueue.execute(new Task(taskName) {
+                @Override
                 public void run() {
                     if( cancelHandler!=null ) {
                         cancelHandler.run();
@@ -160,7 +174,9 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
     @Override
     protected void onResume() {
         debug("onResume");
-        targetQueue.execute(new Task() {
+        String taskName = Task.DEBUG_TASK ? "HawtCustomDispatchSource resume" : null;
+        targetQueue.execute(new Task(taskName) {
+            @Override
             public void run() {
                 if( isCanceled() ) {
                     return;
@@ -181,31 +197,37 @@ final public class HawtCustomDispatchSource<Event, MergedEvent> extends Abstract
         });
     }
 
+    @Override
     public boolean isCanceled() {
         return canceled.get();
     }
 
+    @Override
     @Deprecated
     public void setCancelHandler(Runnable handler) {
         this.setCancelHandler(new TaskWrapper(handler));
     }
 
+    @Override
     @Deprecated
     public void setEventHandler(Runnable handler) {
         this.setEventHandler(new TaskWrapper(handler));
     }
 
+    @Override
     public void setCancelHandler(Task cancelHandler) {
         this.cancelHandler = cancelHandler;
     }
 
+    @Override
     public void setEventHandler(Task eventHandler) {
         this.eventHandler = eventHandler;
     }
 
     protected void debug(String str, Object... args) {
         if (DEBUG) {
-            System.out.println(format("[DEBUG] HawtCustomDispatchSource %0#10x: ", System.identityHashCode(this))+format(str, args));
+            String thread = Thread.currentThread().getName();
+            System.out.println(format("DEBUG %1$tT.%1$tL | %2$s | HawtCustomDispatchSource %3$0#10x | %4$s", System.currentTimeMillis(), thread, System.identityHashCode(this), format(str, args)));
         }
     }
 

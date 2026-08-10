@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,15 +18,20 @@
 
 package org.fusesource.hawtdispatch.internal;
 
-import org.fusesource.hawtdispatch.*;
+import static java.lang.String.format;
+import static org.fusesource.hawtdispatch.DispatchQueue.QueueType.THREAD_QUEUE;
 
-import java.io.IOException;
-import java.nio.channels.*;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.SelectableChannel;
+import java.nio.channels.SelectionKey;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static java.lang.String.format;
-import static org.fusesource.hawtdispatch.DispatchQueue.QueueType.THREAD_QUEUE;
+import org.fusesource.hawtdispatch.Dispatch;
+import org.fusesource.hawtdispatch.DispatchQueue;
+import org.fusesource.hawtdispatch.DispatchSource;
+import org.fusesource.hawtdispatch.Task;
+import org.fusesource.hawtdispatch.TaskWrapper;
 
 /**
  * <p>
@@ -36,7 +42,7 @@ import static org.fusesource.hawtdispatch.DispatchQueue.QueueType.THREAD_QUEUE;
  * but supports being registered on selectors associated with different thread.
  * Usually just one at time tho.
  * </p>
- * 
+ *
  * @author cmacnaug
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
@@ -138,9 +144,12 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         register_on(selectorQueue);
     }
 
+    @Override
     public void cancel() {
         if( canceled.compareAndSet(false, true) ) {
-            selectorQueue.execute(new Task(){
+            String taskName = Task.DEBUG_TASK ? "NioDispatchSource internal_cancel for " + targetQueue.getLabel() : null;
+            selectorQueue.execute(new Task(taskName) {
+                @Override
                 public void run() {
                     internal_cancel();
                 }
@@ -148,8 +157,33 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         }
     }
 
+    /**
+     * Undoes every nio operations related to this source, then upcall the cancelHandler.
+     *
+     * This function may be called from above or from below.
+     * From above, it is called by cancel, during the canceling of the transport.
+     * From below, it is called by NioManager.cancel as an exception handler from nio select related operations.
+     */
     void internal_cancel() {
+        // the key_cancel part actually performs the nio undoing. This is done in 1 or 2 steps, depending on the cases.
+        // In both cases, key_cancel is executed as an atomic operation, as it runs as a single Task in the selectorQueue.
+        // It is also idempotent, as it runs only when keyState is not null, and nullifies keyState.
+        //
+        // In the first case, the transport has created its readSource and writeSource on the same ThreadDispatchQueue,
+        // and this internal_cancel is executed on one of those queues while the other is still active.
+        // In this case, internal_cancel only breaks the uplink from the nio event to the source eventHandler.
+        // More specifically, the source is removed from the list of sources in the selection key attachment.
+        // The nio selection key itself is untouched and could trigger an nio event. However the NioManager
+        // will no longer be able to execute the source event handler.
+        //
+        // In the second case, the two sources have been created on separate ThreadDispatchQueues, or the other
+        // source has already been canceled. In this case, internal_cancel will actually perform all the nio undoing
+        // in addition to the cleaning of the uplink described in the first case. If both sources are running in the same
+        // queue, then the nio SelectionKey is shared and the nio undoing will work for both sources.
         key_cancel();
+        // this second part relates to the asynchronous cancel algorithm of the transport.
+        // The upcall is always executed, each time internal_cancel is called. However the call to internal_cancel
+        // is protected by the value of the AtomicBoolean canceled, so that it will ever be called once for each source.
         if( cancelHandler!=null ) {
             targetQueue.execute(cancelHandler);
         }
@@ -175,7 +209,9 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
     }
 
     private void register_on(final DispatchQueue queue) {
-        queue.execute(new Task(){
+        String taskName = Task.DEBUG_TASK ? "NioDispatchSource register interest for " + targetQueue.getLabel() : null;
+        queue.execute(new Task(taskName){
+            @Override
             public void run() {
                 assert keyState.get()==null;
                 if(DEBUG) debug("Registering interest %s", opsToString(interestOps));
@@ -184,8 +220,16 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
                     attachment.sources.add(NioDispatchSource.this);
                     keyState.set(new KeyState(attachment));
 
-                } catch (ClosedChannelException e) {
+                } catch (ClosedChannelException | RuntimeException e) {
                     debug(e, "could not register with selector");
+                    // the only possible source of the exception is from the register call
+                    // the NioManager already canceled the key, and it may have started the
+                    // asynchronous cancel algorithm if the key is shared with another source
+                    // however this source has not been registered in the attachment, so it
+                    // must be explicitely canceled.
+                    if(canceled.compareAndSet(false, true)) {
+                        internal_cancel();
+                    }
                 }
                 debug("Registered");
             }
@@ -201,7 +245,9 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         state.readyOps |= readyOps;
         if( state.readyOps!=0  && !isSuspended()&& !isCanceled() ) {
             state.readyOps = 0;
-            targetQueue.execute(new Task() {
+            String taskName = Task.DEBUG_TASK ? "NioDispatchSource fire " + targetQueue.getLabel() : null;
+            targetQueue.execute(new Task(taskName) {
+                @Override
                 public void run() {
                     if( !isSuspended() && !isCanceled()) {
                         if(DEBUG) debug("fired %s", opsToString(readyOps));
@@ -218,25 +264,40 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         }
     }
 
-    private Task updateInterestTask = new Task(){
+    /**
+     * Task updating the interestOps of the source's SelectionKey.
+     * This task must be run in the selectorQueue, which is ensured by the function updateInterest.
+     */
+    private final Task updateInterestTask = new Task("NioDispatchSource update interest") {
+        @Override
         public void run() {
-            if( !isSuspended() && !isCanceled() ) {
-                if(DEBUG) debug("adding interest: %d", opsToString(interestOps));
-                KeyState state = keyState.get();
-                if( state==null ) {
-                    return;
-                }
+          if(isSuspended() || isCanceled())
+            return;
+          if(DEBUG) debug("adding interest: %s", opsToString(interestOps));
+          KeyState state = keyState.get();
+          if( state==null ) {
+            // should never occur as isSuspended is false, so resume has already been called,
+            // and the first call to resume calls onStartup which creates the KeyState
+            if(DEBUG) debug("unexpected null keyState");
+            return;
+          }
 
-                SelectionKey key = state.key();
-                try {
-                    key.interestOps(key.interestOps() | interestOps);
-                } catch(CancelledKeyException e) {
-                    internal_cancel();
-                }
-            }
+          SelectionKey key = state.key();
+          try {
+            key.interestOps(key.interestOps() | interestOps);
+          } catch(RuntimeException e) {
+            // the expected exception is CancelledKeyException, however we want to make sure that
+            // all exceptions are caught
+            // the former call to internal_cancel looks wrong
+            // as the key is canceled, NioManager.cancel must be called instead
+            getCurrentNioManager().cancel(key);
+          }
         }
     };
 
+    /**
+     * Executes the updateInterestTask in the proper queue.
+     */
     private void updateInterest() {
         if( isCurrent(selectorQueue) ) {
             updateInterestTask.run();
@@ -263,13 +324,16 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         debug("onResume");
         if( isCurrent(selectorQueue) ) {
             KeyState state = keyState.get();
+            // state should not be null as the first call to resume calls onStartup which creates the KeyState
             if( state==null || state.readyOps==0 ) {
                 updateInterest();
             } else {
                 fire(state.readyOps);
             }
         } else {
-            selectorQueue.execute(new Task(){
+            String taskName = Task.DEBUG_TASK ? "NioDispatchSource onResume for " + targetQueue.getLabel() : null;
+            selectorQueue.execute(new Task(taskName){
+                @Override
                 public void run() {
                     KeyState state = keyState.get();
                     if( state==null || state.readyOps==0 ) {
@@ -282,24 +346,29 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         }
     }
 
+    @Override
     public boolean isCanceled() {
         return canceled.get();
     }
 
+    @Override
     @Deprecated
     public void setCancelHandler(Runnable handler) {
         this.setCancelHandler(new TaskWrapper(handler));
     }
 
+    @Override
     @Deprecated
     public void setEventHandler(Runnable handler) {
         this.setEventHandler(new TaskWrapper(handler));
     }
 
+    @Override
     public void setCancelHandler(Task cancelHandler) {
         this.cancelHandler = cancelHandler;
     }
 
+    @Override
     public void setEventHandler(Task eventHandler) {
         this.eventHandler = eventHandler;
     }
@@ -308,6 +377,7 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
         return null;
     }
 
+    @Override
     public void setTargetQueue(DispatchQueue next) {
         super.setTargetQueue(next);
 
@@ -324,6 +394,7 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
             selectorQueue = queue;
             if( previous!=null ) {
                 previous.execute(new Task(){
+                    @Override
                     public void run() {
                         key_cancel();
                         register_on(newQueue);
@@ -342,7 +413,7 @@ final public class NioDispatchSource extends AbstractDispatchObject implements D
             if( Dispatch.getCurrentQueue()!=null ) {
                 target = Dispatch.getCurrentQueue().getLabel() + " | ";
             }
-            System.out.println(format("DEBUG | %s | #%0#10x | %s%s", thread, System.identityHashCode(this), target, format(str, args)));
+            System.out.println(format("DEBUG %1$tT.%1$tL | %2$s | NioDispatchSource #%3$0#10x | %4$s%5$s", System.currentTimeMillis(), thread, System.identityHashCode(this), target, format(str, args)));
         }
     }
 

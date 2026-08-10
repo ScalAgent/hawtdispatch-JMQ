@@ -2,6 +2,7 @@
  * Copyright (c) 2008-2009 Apple Inc. All rights reserved.
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +19,11 @@
 
 package org.fusesource.hawtdispatch;
 
-import org.fusesource.hawtdispatch.internal.DispatcherConfig;
-
 import java.nio.channels.SelectableChannel;
 import java.nio.channels.SelectionKey;
 import java.util.List;
+
+import org.fusesource.hawtdispatch.internal.DispatcherConfig;
 
 /**
  * <p>
@@ -79,7 +80,7 @@ public class Dispatch {
      * Returns the global concurrent queue of default priority.
      * </p>
      *
-     * @see #getGlobalQueue(DispatchPriority)  
+     * @see #getGlobalQueue(DispatchPriority)
      * @return the default priority global queue.
      */
     public static DispatchQueue getGlobalQueue() {
@@ -177,7 +178,7 @@ public class Dispatch {
      * the dispatch source and automatically submit a handler runnable to a dispatch queue
      * in response to the events.
      * </p>
-     * 
+     *
      * @param aggregator the data aggregation strategy to use.
      * @param queue The dispatch queue to which the event handler tasks will be submited.
      *
@@ -271,7 +272,8 @@ public class Dispatch {
     /**
      * A Runnable task that does nothing.
      */
-    public static final Task NOOP = new Task() {
+    public static final Task NOOP = new Task("NOOP") {
+        @Override
         public void run() {}
     };
 }

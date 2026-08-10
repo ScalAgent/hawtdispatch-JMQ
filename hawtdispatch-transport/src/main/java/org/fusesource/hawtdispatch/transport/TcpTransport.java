@@ -18,14 +18,25 @@
 
 package org.fusesource.hawtdispatch.transport;
 
-import org.fusesource.hawtdispatch.*;
-import org.fusesource.hawtdispatch.internal.BaseSuspendable;
+import static java.lang.String.format;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.net.*;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketException;
+import java.net.URI;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
-import java.nio.channels.*;
+import java.nio.channels.GatheringByteChannel;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.ScatteringByteChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.SocketChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,6 +48,14 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
+import org.fusesource.hawtdispatch.CustomDispatchSource;
+import org.fusesource.hawtdispatch.Dispatch;
+import org.fusesource.hawtdispatch.DispatchQueue;
+import org.fusesource.hawtdispatch.DispatchSource;
+import org.fusesource.hawtdispatch.EventAggregators;
+import org.fusesource.hawtdispatch.Retained;
+import org.fusesource.hawtdispatch.Task;
 
 /**
  * An implementation of the {@link org.fusesource.hawtdispatch.transport.Transport} interface using raw tcp/ip
@@ -63,17 +82,38 @@ public class TcpTransport extends ServiceBase implements Transport {
         boolean is(Class<? extends SocketState> clazz) {
             return getClass()==clazz;
         }
+        @Override
+        public String toString() {
+          return getClass().getSimpleName();
+        }
     }
 
     static class DISCONNECTED extends SocketState{}
 
     class CONNECTING extends SocketState{
+        @Override
         void onStop(Task onCompleted) {
             trace("CONNECTING.onStop");
-            CANCELING state = new CANCELING();
-            socketState = state;
-            state.onStop(onCompleted);
+            // the SocketChannel is open, but the bind failed or the connect has not completed
+            // a non blocking connect may has been executed, but the finishConnect has not completed
+            // it may be necessary to execute the asynchronous cancel algorithm
+            if (readSource != null) {
+              CANCELING state = new CANCELING();
+              socketState = state;
+              state.onStop(onCompleted);
+            } else {
+              try {
+                if( closeOnCancel ) {
+                  channel.close();
+                }
+              } catch (IOException ignore) {
+              }
+              socketState = new CANCELED(true);
+              trace("CONNECTING: run task " + onCompleted);
+              onCompleted.run();
+            }
         }
+        @Override
         void onCanceled() {
             trace("CONNECTING.onCanceled");
             CANCELING state = new CANCELING();
@@ -89,13 +129,37 @@ public class TcpTransport extends ServiceBase implements Transport {
             remoteAddress = channel.socket().getRemoteSocketAddress();
         }
 
+        @Override
         void onStop(Task onCompleted) {
             trace("CONNECTED.onStop");
-            CANCELING state = new CANCELING();
-            socketState = state;
-            state.add(createDisconnectTask());
-            state.onStop(onCompleted);
+            if (readSource != null || writeSource != null) {
+              // standard case, need nio cleaning
+              // start the asynchronous cancel algorithm
+              CANCELING state = new CANCELING();
+              socketState = state;
+              state.add(createDisconnectTask());
+              state.onStop(onCompleted);
+              // the algorithm continues with the CANCELING.onCanceled callbacks
+            } else {
+              // should probably never occur in the CONNECTED state of a client transport,
+              // as the onConnected call immediately follows the CONNECTED state and
+              // sets the readSource and the writeSource
+              // however it may occur for a session transport which is in the CONNECTED state
+              // when the onAccept upcall is executed. In that case there is no listener set.
+              try {
+                if( closeOnCancel ) {
+                  channel.close();
+                }
+              } catch (IOException ignore) {
+              }
+              if (listener != null)
+                listener.onTransportDisconnected();
+              socketState = new CANCELED(true);
+              trace("CONNECTED: run task " + onCompleted);
+              onCompleted.run();
+            }
         }
+        @Override
         void onCanceled() {
             trace("CONNECTED.onCanceled");
             CANCELING state = new CANCELING();
@@ -104,7 +168,9 @@ public class TcpTransport extends ServiceBase implements Transport {
             state.onCanceled();
         }
         Task createDisconnectTask() {
-            return new Task(){
+            String taskName = Task.DEBUG_TASK ? "disconnect task " + (dispatchQueue == null ? "" : dispatchQueue.getLabel()) : null;
+            return new Task(taskName) {
+                @Override
                 public void run() {
                     listener.onTransportDisconnected();
                 }
@@ -121,15 +187,22 @@ public class TcpTransport extends ServiceBase implements Transport {
             if( readSource!=null ) {
                 remaining++;
                 readSource.cancel();
+                // it might be useful to nullify readSource, otherwise a later dispose will call cancel again unnecessarily
+                // readSource = null;
             }
             if( writeSource!=null ) {
                 remaining++;
                 writeSource.cancel();
+                // it might be necessary to nullify writeSource, otherwise a later dispose will call cancel again unnecessarily
+                // writeSource = null;
             }
         }
+        @Override
         void onStop(Task onCompleted) {
-            trace("CANCELING.onCompleted");
+            trace("CANCELING.onStop");
             add(onCompleted);
+            // Note SL: I cannot see the interest of setting dispose to true;  it will trigger a call to dispose
+            // in onCanceled, which will call again the cancels already called in the constructor
             dispose = true;
         }
         void add(Task onCompleted) {
@@ -137,6 +210,7 @@ public class TcpTransport extends ServiceBase implements Transport {
                 runnables.add(onCompleted);
             }
         }
+        @Override
         void onCanceled() {
             trace("CANCELING.onCanceled");
             remaining--;
@@ -149,9 +223,13 @@ public class TcpTransport extends ServiceBase implements Transport {
                 }
             } catch (IOException ignore) {
             }
+            // Note SL: I would call new CANCELED(true) here
+            // if dispose is false, then CANCELED.onStop will call dispose, which will call again the cancels
+            // already called in the constructor of CANCELING
             socketState = new CANCELED(dispose);
             for (Task runnable : runnables) {
-                runnable.run();
+              trace("CANCELING: run task " + runnable);
+              runnable.run();
             }
             if (dispose) {
                 dispose();
@@ -166,12 +244,14 @@ public class TcpTransport extends ServiceBase implements Transport {
             this.disposed=disposed;
         }
 
+        @Override
         void onStop(Task onCompleted) {
             trace("CANCELED.onStop");
             if( !disposed ) {
                 disposed = true;
                 dispose();
             }
+            trace("CANCELED: run task " + onCompleted);
             onCompleted.run();
         }
     }
@@ -236,6 +316,7 @@ public class TcpTransport extends ServiceBase implements Transport {
             }
         }
 
+        @Override
         public int read(ByteBuffer dst) throws IOException {
             if( maxReadRate ==0 ) {
                 return channel.read(dst);
@@ -268,6 +349,7 @@ public class TcpTransport extends ServiceBase implements Transport {
             }
         }
 
+        @Override
         public int write(ByteBuffer src) throws IOException {
             if( maxWriteRate ==0 ) {
                 return channel.write(src);
@@ -301,10 +383,12 @@ public class TcpTransport extends ServiceBase implements Transport {
             }
         }
 
+        @Override
         public boolean isOpen() {
             return channel.isOpen();
         }
 
+        @Override
         public void close() throws IOException {
             channel.close();
         }
@@ -317,6 +401,7 @@ public class TcpTransport extends ServiceBase implements Transport {
 //            }
         }
 
+        @Override
         public long read(ByteBuffer[] dsts, int offset, int length) throws IOException {
             if(offset+length > dsts.length || length<0 || offset<0) {
                 throw new IndexOutOfBoundsException();
@@ -334,10 +419,12 @@ public class TcpTransport extends ServiceBase implements Transport {
             return rc;
         }
 
+        @Override
         public long read(ByteBuffer[] dsts) throws IOException {
             return read(dsts, 0, dsts.length);
         }
 
+        @Override
         public long write(ByteBuffer[] srcs, int offset, int length) throws IOException {
             if(offset+length > srcs.length || length<0 || offset<0) {
                 throw new IndexOutOfBoundsException();
@@ -355,15 +442,18 @@ public class TcpTransport extends ServiceBase implements Transport {
             return rc;
         }
 
+        @Override
         public long write(ByteBuffer[] srcs) throws IOException {
             return write(srcs, 0, srcs.length);
         }
 
     }
 
-    private final Task CANCEL_HANDLER = new Task() {
+    private final Task CANCEL_HANDLER = new Task("CANCEL_HANDLER") {
+        @Override
         public void run() {
-            socketState.onCanceled();
+          trace("CANCEL_HANDLER");
+          socketState.onCanceled();
         }
     };
 
@@ -418,6 +508,10 @@ public class TcpTransport extends ServiceBase implements Transport {
         if( channel!=null && codec!=null ) {
             initializeCodec();
         }
+
+        // no cleaning operation is necessary in case of exception
+        // the created structures can be collected by the garbage
+        // no execution component has been started, no external resource has been reserved
     }
 
     protected void initializeCodec() throws Exception {
@@ -439,10 +533,12 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
 
+    @Override
     public DispatchQueue getDispatchQueue() {
         return dispatchQueue;
     }
 
+    @Override
     public void setDispatchQueue(DispatchQueue queue) {
         this.dispatchQueue = queue;
         if(readSource!=null) readSource.setTargetQueue(queue);
@@ -457,7 +553,7 @@ public class TcpTransport extends ServiceBase implements Transport {
 
     private Proxy proxy = null;
     private String auth = null;
-    
+
     public final Proxy getProxy() {
       return proxy;
     }
@@ -473,19 +569,18 @@ public class TcpTransport extends ServiceBase implements Transport {
       SocketAddress sa;
 
       trace("connect: " + proxy);
+      boolean blocking = channel.isBlocking();
+      trace("connect: blocking=" + blocking);
       if (proxy == null) {
         sa = remoteAddr;
       } else {
         sa = proxy.address();
         proxyConnect = createProxyRequest(remoteAddr.getHostString(), remoteAddr.getPort(), auth);
-      }
-
-      boolean blocking = channel.isBlocking();
-      trace("connect: blocking=" + blocking);
-      try {
-        channel.configureBlocking(true);
-      } catch (IOException ioe) {
-        throw ioe;
+        try {
+          channel.configureBlocking(true);
+        } catch (IOException ioe) {
+          throw ioe;
+        }
       }
 
       // Get the connection timeout
@@ -511,18 +606,17 @@ public class TcpTransport extends ServiceBase implements Transport {
             throw new Exception("TcpTransport.connect:" + Integer.toString(statusCode));
           }
         }
-        
-        // Should be always true (channel is in blocking mode).
+
         return success;
       } catch (Exception e) {
         throw new IOException(e);
       } finally {
-        if (success) {
+        if (success && proxy != null) {
           try {
             channel.configureBlocking(blocking);
             trace("connect: configureBlocking -> " + blocking);
           } catch (IOException ioe) {
-            
+
           }
         }
       }
@@ -656,30 +750,38 @@ public class TcpTransport extends ServiceBase implements Transport {
     // Modification for use HTTP CONNECT # END
     // ==================================================
 
+    @Override
     public void _start(Task onCompleted) {
+      trace("_start from " + getRemoteAddress() + ", socketState=" + socketState);
       try {
         if (socketState.is(CONNECTING.class)) {
 
           // Resolving host names might block.. so do it on the blocking executor.
           this.blockingExecutor.execute(new Runnable() {
+            @Override
             public void run() {
               try {
 
-                final InetSocketAddress localAddress = (localLocation != null) ?
-                                                                                new InetSocketAddress(InetAddress.getByName(localLocation.getHost()), localLocation.getPort())
-                                                                                : null;
+                final InetSocketAddress localAddress = (localLocation != null)
+                    ? new InetSocketAddress(InetAddress.getByName(localLocation.getHost()), localLocation.getPort())
+                    : null;
 
                 String host = resolveHostName(remoteLocation.getHost());
                 final InetSocketAddress remoteAddress = new InetSocketAddress(host, remoteLocation.getPort());
 
                 // Done resolving.. switch back to the dispatch queue.
-                dispatchQueue.execute(new Task() {
+                String taskName = Task.DEBUG_TASK ? "_start main for " + dispatchQueue.getLabel() : null;
+                dispatchQueue.execute(new Task(taskName) {
                   @Override
                   public void run() {
+                    trace("continue _start: socketState=" + socketState);
+                    // check that this task is still valid
                     // No need to complete if we have been canceled.
-                    if( ! socketState.is(CONNECTING.class) ) {
+                    if(getServiceState() != STARTED || ! socketState.is(CONNECTING.class) ) {
+                      trace("_start interrupted.");
                       return;
                     }
+                    // _start main step
                     try {
 
                       if (localAddress != null) {
@@ -694,31 +796,31 @@ public class TcpTransport extends ServiceBase implements Transport {
                         return;
                       }
 
-                      // NOTE SL: the connect function changes the blocking property of the channel to true
-                      // before actually connecting. I assume the following code is never reached.
+                      // The asynchronous connect code has been reactivated
 
                       // this allows the connect to complete..
                       readSource = Dispatch.createSource(channel, SelectionKey.OP_CONNECT, dispatchQueue);
-                      readSource.setEventHandler(new Task() {
+                      String taskName = Task.DEBUG_TASK ? "async connect for " + dispatchQueue.getLabel() : null;
+                      readSource.setEventHandler(new Task(taskName) {
+                        @Override
                         public void run() {
-                          if (getServiceState() != STARTED) {
+                          // check that this task is still valid
+                          if (getServiceState() != STARTED || ! socketState.is(CONNECTING.class)) {
+                            trace("asynchronous connect dropped.");
                             return;
                           }
                           try {
-                            trace("connected.");
                             channel.finishConnect();
                             readSource.setCancelHandler(null);
                             readSource.cancel();
                             readSource = null;
+                            trace("connected.");
                             socketState = new CONNECTED();
                             onConnected();
-                          } catch (IOException e) {
+                          } catch (IOException | RuntimeException e) {
+                            trace("_start async connect: call onTransportFailure, socketState=" + socketState);
                             onTransportFailure(e);
-                            // TODO SL
-                            // this catch clause is simpler than the general one in this function
-                            // isn't it necessary to execute:
-                            //   channel.close();
-                            //   socketState = new CANCELED(true);
+                            // make sure the transport will not freeze in case of RuntimeException
                             // TcpTransport.onConnected actually raises no exception
                             // However the SslTransport implementation does raise an exception
                             // - in case of write error in the channel
@@ -729,59 +831,114 @@ public class TcpTransport extends ServiceBase implements Transport {
                       readSource.setCancelHandler(CANCEL_HANDLER);
                       readSource.resume();
 
-                    } catch (Exception e) {
-                      try {
-                        channel.close();
-                      } catch (Exception ignore) {
+                      // the onCompleted callback should be executed here instead of in the finally clause
+                      // however this would leave the transport in a STARTING state which should be handled
+                      // in the error handling code
+                    } catch (IOException | RuntimeException e) {
+                      // it is theoretically possible that the exception is raised from the onConnected call
+                      // the read/write sources could have been created
+                      // it is also possible that the call to bind failed, and the socket is not even connected
+                      /*
+                       * simplify the exception handler
+                      if (readSource != null || writeSource != null) {
+                        // standard case, need nio cleaning
+                        // start the asynchronous cancel algorithm
+                        socketState = new CANCELING();
+                        // the algorithm continues with the CANCELING.onCanceled callbacks
+                        // we could add an onCompleted callback, however we choose to keep the original code
+                        // which calls listener.onTransportFailure, triggering a transport.stop
+                      } else {
+                        try {
+                          if( closeOnCancel ) {
+                            channel.close();
+                          }
+                        } catch (IOException ignore) {
+                        }
+                        socketState = new CANCELED(true);
                       }
-                      socketState = new CANCELED(true);
-                      if (! (e instanceof IOException)) {
-                        e = new IOException(e);
-                      }
-                      listener.onTransportFailure((IOException)e);
+                      */
+                      trace("_start: call onTransportFailure, socketState=" + socketState);
+                      onTransportFailure(e);
                     }
                   }
                 });
 
-              } catch (final IOException e) {
+              } catch (final IOException | RuntimeException e) {
                 // we're in blockingExecutor thread context here
-                dispatchQueue.execute(new Task() {
+                // the _start main step has not begun and will not execute
+                String taskName = Task.DEBUG_TASK ? "Exception handler for " + dispatchQueue.getLabel() : null;
+                dispatchQueue.execute(new Task(taskName) {
+                  @Override
                   public void run() {
+                    // make sure the task is still valid, a stop may have been called in between
+                    if (_serviceState != STARTED)
+                      return;
+                    /*
+                     * simplify the exception handler
                     try {
                       channel.close();
-                    } catch (IOException ignore) {
+                    } catch (IOException | RuntimeException ignore) {
                     }
+                    // we can safely switch to the terminal state (of the TcpTransport)
+                    // beware that the ServiceBase state will be set to STARTED in the finally clause
                     socketState = new CANCELED(true);
-                    listener.onTransportFailure(e);
+                    */
+                    trace("_start DNS task: call onTransportFailure, socketState=" + socketState);
+                    onTransportFailure(e);
                   }
                 });
               }
             }
           });
         } else if (socketState.is(CONNECTED.class)) {
-          dispatchQueue.execute(new Task() {
+          // this case comes from connected(SocketChannel), called by a TcpTransportServer
+          // the connection has already been accepted
+          String taskName = Task.DEBUG_TASK ? "_start CONNECTED case for " + dispatchQueue.getLabel() : null;
+          dispatchQueue.execute(new Task(taskName) {
+            // queue switch probably useless, as _start is already executed in the transport queue
+            // it has probably been added so that the finally clause (serviceState=STARTED)
+            // is executed before onConnected as this is the case for a client side TcpTransport
+            @Override
             public void run() {
+              // make sure the task is still valid
+              if (_serviceState != STARTED || !socketState.is(CONNECTED.class)) {
+                trace("Session transport connection dropped.");
+                return;
+              }
               try {
                 trace("was connected.");
                 onConnected();
-              } catch (IOException e) {
+              } catch (IOException | RuntimeException e) {
                 onTransportFailure(e);
               }
             }
           });
+        } else if (socketState.is(CANCELING.class) || socketState.is(CANCELED.class)) {
+          // assume that the transport has been stopped
+          // should never occur
+          logger.info("starting a transport with socketState " + socketState);
         } else {
-          trace("cannot be started.  socket state is: " + socketState);
+          // other hypothetically possible states are DISCONNECTED
+          // DISCONNECTED requires a connecting call before start
+          logger.warning("transport cannot be started,  socket state is: " + socketState);
         }
       } finally {
+        // NOTE: this code is executed before the actual start algorithm executes, as it executes
+        // asynchronously in the blockingExecutor for a client transport, or with a Task indirection
+        // for a sessions transport
+        // this leads to the _serviceState switching to STARTED while it is not actually started,
+        // and to a probably useless and probably unused onCompleted upcall.
+        trace("_start: finally clause, socketState=" + socketState + ", onCompleted=" + onCompleted);
         if (onCompleted != null) {
           onCompleted.run();
         }
       }
     }
 
+    @Override
     public void _stop(final Task onCompleted) {
-        trace("stopping.. at state: "+socketState);
-        socketState.onStop(onCompleted);
+      trace("stopping.. at state: "+socketState);
+      socketState.onStop(onCompleted);
     }
 
     protected String resolveHostName(String host) throws UnknownHostException {
@@ -796,14 +953,18 @@ public class TcpTransport extends ServiceBase implements Transport {
 
     protected void onConnected() throws IOException {
         yieldSource = Dispatch.createSource(EventAggregators.INTEGER_ADD, dispatchQueue);
-        yieldSource.setEventHandler(new Task() {
+        String taskName = Task.DEBUG_TASK ? "yieldSource event handler for " + dispatchQueue.getLabel() : null;
+        yieldSource.setEventHandler(new Task(taskName) {
+            @Override
             public void run() {
                 drainInbound();
             }
         });
         yieldSource.resume();
         drainOutboundSource = Dispatch.createSource(EventAggregators.INTEGER_ADD, dispatchQueue);
-        drainOutboundSource.setEventHandler(new Task() {
+        taskName = Task.DEBUG_TASK ? "drainOutboundSource event handler for " + dispatchQueue.getLabel() : null;
+        drainOutboundSource.setEventHandler(new Task(taskName) {
+            @Override
             public void run() {
                 flush();
             }
@@ -816,14 +977,16 @@ public class TcpTransport extends ServiceBase implements Transport {
         readSource.setCancelHandler(CANCEL_HANDLER);
         writeSource.setCancelHandler(CANCEL_HANDLER);
 
-        readSource.setEventHandler(new Task() {
+        taskName = Task.DEBUG_TASK ? "readSource event handler for " + dispatchQueue.getLabel() : null;
+        readSource.setEventHandler(new Task(taskName) {
+            @Override
             public void run() {
-                // this handler shall be executed by the selectorQueue of the readSource
-                // it may run concurrently with the transport dispatchQueue
                 drainInbound();
             }
         });
-        writeSource.setEventHandler(new Task() {
+        taskName = Task.DEBUG_TASK ? "writeSource event handler for " + dispatchQueue.getLabel() : null;
+        writeSource.setEventHandler(new Task(taskName) {
+            @Override
             public void run() {
                 flush();
             }
@@ -837,7 +1000,9 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
     private void schedualRateAllowanceReset() {
-        dispatchQueue.executeAfter(1, TimeUnit.SECONDS, new Task(){
+        String taskName = Task.DEBUG_TASK ? "reset schedule rate for " + dispatchQueue.getLabel() : null;
+        dispatchQueue.executeAfter(1, TimeUnit.SECONDS, new Task(taskName){
+            @Override
             public void run() {
                 if( !socketState.is(CONNECTED.class) ) {
                     return;
@@ -860,12 +1025,13 @@ public class TcpTransport extends ServiceBase implements Transport {
         }
     }
 
-    public void onTransportFailure(IOException error) {
-        listener.onTransportFailure(error);
-        // socketState.onCanceled();
+    public void onTransportFailure(Exception error) {
+        // upcall the listener which should eventually call transport.stop
+        listener.onTransportFailure(error instanceof IOException ? (IOException) error : new IOException(error));
     }
 
 
+    @Override
     public boolean full() {
         return codec==null ||
                codec.full() ||
@@ -875,6 +1041,7 @@ public class TcpTransport extends ServiceBase implements Transport {
 
     boolean rejectingOffers;
 
+    @Override
     public boolean offer(Object command) {
         dispatchQueue.assertExecuting();
         if( full() ) {
@@ -889,7 +1056,7 @@ public class TcpTransport extends ServiceBase implements Transport {
                 default:
                     drainOutboundSource.merge(1);
             }
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             onTransportFailure(e);
         }
         return true;
@@ -900,6 +1067,7 @@ public class TcpTransport extends ServiceBase implements Transport {
     /**
      *
      */
+    @Override
     public void flush() {
         dispatchQueue.assertExecuting();
         if (getServiceState() != STARTED || !socketState.is(CONNECTED.class)) {
@@ -920,7 +1088,7 @@ public class TcpTransport extends ServiceBase implements Transport {
                     resumeWrite();
                 }
             }
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             onTransportFailure(e);
         }
     }
@@ -929,11 +1097,15 @@ public class TcpTransport extends ServiceBase implements Transport {
         return true;
     }
 
+    @Override
     public void drainInbound() {
       trace("TcpT.drainInbound start");
       if (!getServiceState().isStarted() || readSource.isSuspended()) {
         return;
       }
+      // drainInbound is called on OP_READ nio events, which includes end of stream and connection closed
+      // we could try to report such terminal events in the suspended state, however most (all?) of the time
+      // the nio interest is no longer registered in the suspended state
       try {
         long initial = codec.getReadCounter();
         // Only process up to 4 x the read buffer worth of data at a time so we can give
@@ -946,7 +1118,7 @@ public class TcpTransport extends ServiceBase implements Transport {
               listener.onTransportCommand(command);
             } catch (Throwable e) {
               e.printStackTrace();
-              onTransportFailure(new IOException("Transport listener failure."));
+              onTransportFailure(e instanceof Exception ? (Exception) e : new IOException("Transport listener failure."));
             }
 
             // the transport may be suspended after processing a command.
@@ -958,15 +1130,17 @@ public class TcpTransport extends ServiceBase implements Transport {
           }
         }
         yieldSource.merge(1);
-      } catch (IOException e) {
+      } catch (IOException | RuntimeException e) {
         onTransportFailure(e);
       }
     }
 
+    @Override
     public SocketAddress getLocalAddress() {
         return localAddress;
     }
 
+    @Override
     public SocketAddress getRemoteAddress() {
         return remoteAddress;
     }
@@ -983,6 +1157,7 @@ public class TcpTransport extends ServiceBase implements Transport {
         return false;
     }
 
+    @Override
     public void suspendRead() {
         if( isConnected() && readSource!=null ) {
             readSource.suspend();
@@ -990,6 +1165,7 @@ public class TcpTransport extends ServiceBase implements Transport {
     }
 
 
+    @Override
     public void resumeRead() {
         if( isConnected() && readSource!=null ) {
             if( rateLimitingChannel!=null ) {
@@ -1002,7 +1178,9 @@ public class TcpTransport extends ServiceBase implements Transport {
 
     private void _resumeRead() {
         readSource.resume();
-        dispatchQueue.execute(new Task(){
+        String taskName = Task.DEBUG_TASK ? "resume read for " + dispatchQueue.getLabel() : null;
+        dispatchQueue.execute(new Task(taskName) {
+            @Override
             public void run() {
                 drainInbound();
             }
@@ -1021,18 +1199,22 @@ public class TcpTransport extends ServiceBase implements Transport {
         }
     }
 
+    @Override
     public TransportListener getTransportListener() {
         return listener;
     }
 
+    @Override
     public void setTransportListener(TransportListener transportListener) {
         this.listener = transportListener;
     }
 
+    @Override
     public ProtocolCodec getProtocolCodec() {
         return codec;
     }
 
+    @Override
     public void setProtocolCodec(ProtocolCodec protocolCodec) throws Exception {
         this.codec = protocolCodec;
         if( channel!=null && codec!=null ) {
@@ -1040,10 +1222,12 @@ public class TcpTransport extends ServiceBase implements Transport {
         }
     }
 
+    @Override
     public boolean isConnected() {
         return socketState.is(CONNECTED.class);
     }
 
+    @Override
     public boolean isClosed() {
         return getServiceState() == STOPPED;
     }
@@ -1063,16 +1247,16 @@ public class TcpTransport extends ServiceBase implements Transport {
 
     private static final Logger logger = Logger.getLogger("org.fusesource.hawtdispatch.transport");
     private static final boolean DEBUG  = logger.isLoggable(Level.FINE);
-    
-    private void trace(String message) {
+    private final void trace(String message) {
       if (DEBUG)
-        logger.fine(message);
+        logger.fine(format("%1$0#10x | %2$s", System.identityHashCode(this), message));
     }
 
     public SocketChannel getSocketChannel() {
         return channel;
     }
 
+    @Override
     public ReadableByteChannel getReadChannel() {
         initRateLimitingChannel();
         if(rateLimitingChannel!=null) {
@@ -1082,6 +1266,7 @@ public class TcpTransport extends ServiceBase implements Transport {
         }
     }
 
+    @Override
     public WritableByteChannel getWriteChannel() {
         initRateLimitingChannel();
         if(rateLimitingChannel!=null) {
@@ -1151,10 +1336,12 @@ public class TcpTransport extends ServiceBase implements Transport {
         this.keepAlive = keepAlive;
     }
 
+    @Override
     public Executor getBlockingExecutor() {
         return blockingExecutor;
     }
 
+    @Override
     public void setBlockingExecutor(Executor blockingExecutor) {
         this.blockingExecutor = blockingExecutor;
     }

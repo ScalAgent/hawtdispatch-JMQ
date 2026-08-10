@@ -1,6 +1,7 @@
 /**
  * Copyright (C) 2012 FuseSource, Inc.
  * http://fusesource.com
+ * Copyright (C) 2026 ScalAgent D.T
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +18,10 @@
 
 package org.fusesource.hawtdispatch.transport;
 
+import java.util.concurrent.TimeUnit;
+
 import org.fusesource.hawtdispatch.Dispatch;
 import org.fusesource.hawtdispatch.Task;
-
-import java.util.concurrent.TimeUnit;
 
 /**
  * <p>A HeartBeatMonitor can be used to watch the read and write
@@ -58,7 +59,9 @@ public class HeartBeatMonitor {
 
     private void schedule(final short session, long interval, final Task func) {
         if (this.session == session) {
-            transport.getDispatchQueue().executeAfter(interval, TimeUnit.MILLISECONDS, new Task() {
+            String taskName = Task.DEBUG_TASK ? "HeartBeatMonitor: timed scheduleCheck" : null;
+            transport.getDispatchQueue().executeAfter(interval, TimeUnit.MILLISECONDS, new Task(taskName) {
+                @Override
                 public void run() {
                     synchronized (lock) {
                         if (HeartBeatMonitor.this.session == session) {
@@ -73,15 +76,18 @@ public class HeartBeatMonitor {
     private void scheduleCheckWrites(final short session) {
         final ProtocolCodec codec = transport.getProtocolCodec();
         Task func;
+        String taskName = Task.DEBUG_TASK ? "HeartBeatMonitor: scheduleCheckWrites" : null;
         if (codec == null) {
-            func = new Task() {
+            func = new Task(taskName) {
+                @Override
                 public void run() {
                     scheduleCheckWrites(session);
                 }
             };
         } else {
             final long lastWriteCounter = codec.getWriteCounter();
-            func = new Task() {
+            func = new Task(taskName) {
+                @Override
                 public void run() {
                     if (lastWriteCounter == codec.getWriteCounter()) {
                         onKeepAlive.run();
@@ -96,15 +102,18 @@ public class HeartBeatMonitor {
     private void scheduleCheckReads(final short session) {
         final ProtocolCodec codec = transport.getProtocolCodec();
         Task func;
+        String taskName = Task.DEBUG_TASK ? "HeartBeatMonitor: scheduleCheckReads" : null;
         if (codec == null) {
-            func = new Task() {
+            func = new Task(taskName) {
+                @Override
                 public void run() {
                     scheduleCheckReads(session);
                 }
             };
         } else {
             final long lastReadCounter = codec.getReadCounter();
-            func = new Task() {
+            func = new Task(taskName) {
+                @Override
                 public void run() {
                     if (lastReadCounter == codec.getReadCounter() && !readSuspendedInterval && readSuspendCount == 0) {
                         onDead.run();
@@ -122,7 +131,9 @@ public class HeartBeatMonitor {
         readSuspendedInterval = false;
         if (writeInterval != 0) {
             if (initialWriteCheckDelay != 0) {
-                transport.getDispatchQueue().executeAfter(initialWriteCheckDelay, TimeUnit.MILLISECONDS, new Task() {
+                String taskName = Task.DEBUG_TASK ? "HeartBeatMonitor: initial scheduleCheckWrites" : null;
+                transport.getDispatchQueue().executeAfter(initialWriteCheckDelay, TimeUnit.MILLISECONDS, new Task(taskName) {
+                    @Override
                     public void run() {
                         scheduleCheckWrites(session);
                     }
@@ -133,7 +144,9 @@ public class HeartBeatMonitor {
         }
         if (readInterval != 0) {
             if (initialReadCheckDelay != 0) {
-                transport.getDispatchQueue().executeAfter(initialReadCheckDelay, TimeUnit.MILLISECONDS, new Task() {
+              String taskName = Task.DEBUG_TASK ? "HeartBeatMonitor: initial scheduleCheckReads" : null;
+                transport.getDispatchQueue().executeAfter(initialReadCheckDelay, TimeUnit.MILLISECONDS, new Task(taskName) {
+                    @Override
                     public void run() {
                         scheduleCheckReads(session);
                     }
