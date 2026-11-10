@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2012 FuseSource, Inc.
+ * Copyright (C) 2012 - 2026 FuseSource, Inc.
  * http://fusesource.com
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,8 +23,7 @@ import org.fusesource.hawtdispatch.Dispatcher;
  *
  * @author <a href="http://hiramchirino.com">Hiram Chirino</a>
  */
-public class DispatcherConfig {
-
+public final class DispatcherConfig {
     private static HawtDispatcher defaultDispatcher;
 
     synchronized public static HawtDispatcher getDefaultDispatcher() {
@@ -35,11 +34,22 @@ public class DispatcherConfig {
     }
 
     private String label="hawtdispatch";
-    private int threads = Integer.getInteger("hawtdispatch.threads", Runtime.getRuntime().availableProcessors());
     private boolean profile = Boolean.getBoolean("hawtdispatch.profile");
     private int drains = Integer.getInteger("hawtdispatch.drains", 1000);
     private boolean jmx = "true".equals(System.getProperty("hawtdispatch.jmx", "true").toLowerCase());
-
+    
+    private int minThreads;
+    private int threads;
+    
+    {
+      minThreads = Integer.getInteger("hawtdispatch.threads.min", 4);
+      if (Integer.getInteger("hawtdispatch.threads") != null) {
+        threads = Integer.getInteger("hawtdispatch.threads");
+      } else {
+        threads = Integer.max(minThreads, Runtime.getRuntime().availableProcessors());
+      }
+    }
+    
     public static Dispatcher create(String name, int threads) {
         DispatcherConfig config = new DispatcherConfig();
         config.label=name;
