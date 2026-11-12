@@ -291,8 +291,7 @@ public class NioManager {
     // this function never seems to be called
     public void shutdown() throws IOException {
         for (SelectionKey key : selector.keys()) {
-            NioDispatchSource source = (NioDispatchSource) key.attachment();
-            source.cancel();
+          cancel(key);
         }
         selector.close();
     }
@@ -303,8 +302,7 @@ public class NioManager {
         switch (shutdownState) {
         case 1:
           for (SelectionKey key : selector.keys()) {
-            NioDispatchSource source = (NioDispatchSource) key.attachment();
-            source.cancel();
+            cancel(key);
           }
           break;
         case 2:
